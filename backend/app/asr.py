@@ -18,6 +18,7 @@ REARMABLE_ASR_ERROR_CODES = {
     "ASR_PROVIDER_AUTH_ERROR",
     "ASR_PROVIDER_CONFIGURATION_ERROR",
     "ASR_MODEL_CONFIGURATION_ERROR",
+    "ASR_MODEL_DOWNLOAD_NETWORK_ERROR",
     "ASR_LOCAL_DEPENDENCY_MISSING",
     "ASR_LOCAL_RUNTIME_MISSING",
 }
@@ -77,6 +78,7 @@ def _run_with_timeout(operation, timeout: float) -> tuple[str, str]:
 def _local_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
     try:
         from faster_whisper import WhisperModel  # type: ignore
+        from opencc import OpenCC  # type: ignore
     except (ImportError, OSError) as exc:
         raise TranscriptionError(
             "ASR_LOCAL_DEPENDENCY_MISSING",
@@ -154,6 +156,10 @@ def _local_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
             segments, _info = model.transcribe(
                 str(path),
                 language="zh",
+                initial_prompt=(
+                    "以下是一段普通话录音。请使用简体中文准确转写，"
+                    "保留数字、专有名词和自然标点。"
+                ),
                 vad_filter=True,
                 beam_size=5,
                 condition_on_previous_text=True,
@@ -177,6 +183,7 @@ def _local_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
                 False,
                 "input",
             ) from exc
+        text = OpenCC("t2s").convert(text).strip()
         if not text:
             raise TranscriptionError(
                 "ASR_NO_SPEECH", "媒体中未识别到可用语音内容", False, "input"

@@ -68,6 +68,7 @@ class Job(Base):
     project_id: Mapped[str] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    kind: Mapped[str] = mapped_column(String(24), default="pipeline", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(24), default="queued", nullable=False, index=True)
     stage: Mapped[str] = mapped_column(String(32), default="validating", nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -212,6 +213,33 @@ class Selection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class PreviewRender(Base):
+    __tablename__ = "preview_renders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="queued", nullable=False, index=True)
+    output_url: Mapped[str | None] = mapped_column(Text)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "input_hash", name="uq_preview_project_input"),
     )
 
 

@@ -132,6 +132,119 @@ class SemanticEnhancement:
     usage: dict[str, int] | None = None
 
 
+class AssetTags(BaseModel):
+    """Suggested tags/keywords for a newly uploaded material."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tags: list[str] = Field(min_length=0, max_length=6)
+    keywords: list[str] = Field(min_length=0, max_length=8)
+
+
+@dataclass(frozen=True, slots=True)
+class AssetTagSuggestion:
+    tags: list[str]
+    keywords: list[str]
+    provider: str
+    model: str
+    status: str
+    degraded: bool
+    duration_ms: int
+    error_message: str | None = None
+    usage: dict[str, int] | None = None
+
+
+def suggest_asset_tags_detailed(
+    name: str, description: str, settings: Settings
+) -> AssetTagSuggestion:
+    """Suggest Chinese tags and keywords for an uploaded material via the LLM.
+
+    The detailed result records provider/model/version outcome. When the model
+    is disabled or fails, the caller can apply deterministic rule keywords and
+    still persist an honest degraded trace. API keys are always redacted.
+    """
+    started = time.perf_counter()
+    configured = settings.llm_provider
+    if configured in {"", "rules", "off", "disabled"} or not settings.llm_api_key:
+        return AssetTagSuggestion(
+            [], [], "rules", "rule-keywords-v1", "degraded", True, 0,
+            "LLM 未启用，使用规则关键词回退", {},
+        )
+    schema = AssetTags.model_json_schema()
+    payload = {
+        "model": settings.llm_model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是中文素材标注助手。根据素材名称和描述，输出适合检索的中文主题标签(tags)"
+                    "和画面关键词(keywords)。只输出符合 JSON Schema 的 JSON。Schema: "
+                    + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"名称：{name}\n描述：{description or name}",
+            },
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    endpoint = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+    try:
+        response = httpx.post(endpoint, headers=headers, json=payload, timeout=settings.llm_timeout)
+        response.raise_for_status()
+        body = response.json()
+        content = body["choices"][0]["message"]["content"]
+        result = AssetTags.model_validate(json.loads(content))
+        tags = [t.strip()[:20] for t in result.tags if t.strip()][:6]
+        keywords = [k.strip()[:20] for k in result.keywords if k.strip()][:8]
+        usage_payload = body.get("usage") if isinstance(body, dict) else None
+        usage: dict[str, int] = {}
+        if isinstance(usage_payload, dict):
+            for canonical, provider_field in (
+                ("input_tokens", "prompt_tokens"),
+                ("output_tokens", "completion_tokens"),
+                ("total_tokens", "total_tokens"),
+            ):
+                value = usage_payload.get(provider_field)
+                if value is not None:
+                    usage[canonical] = int(value)
+        return AssetTagSuggestion(
+            tags,
+            keywords,
+            configured,
+            settings.llm_model,
+            "succeeded",
+            False,
+            max(0, int((time.perf_counter() - started) * 1_000)),
+            usage=usage,
+        )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        if settings.llm_api_key:
+            message = message.replace(settings.llm_api_key, "[REDACTED]")
+        return AssetTagSuggestion(
+            [],
+            [],
+            configured or "openai-compatible",
+            settings.llm_model,
+            "degraded",
+            True,
+            max(0, int((time.perf_counter() - started) * 1_000)),
+            message[:500],
+            {},
+        )
+
+
+def suggest_asset_tags(
+    name: str, description: str, settings: Settings
+) -> tuple[list[str], list[str]]:
+    suggestion = suggest_asset_tags_detailed(name, description, settings)
+    return suggestion.tags, suggestion.keywords
+
+
 def rule_segments(transcript: str) -> list[dict]:
     result = []
     for text in segment_text(transcript):

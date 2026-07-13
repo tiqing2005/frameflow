@@ -66,6 +66,10 @@ class SelectionPut(BaseModel):
     asset_id: str = Field(min_length=1, max_length=64)
 
 
+class PreviewCreate(BaseModel):
+    force: bool = False
+
+
 class AssetPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     tags: list[str] | None = None
@@ -91,4 +95,3 @@ class AssetPatch(BaseModel):
 
 class FaultNext(BaseModel):
     mode: Literal["ai_degrade", "job_fail", "none"]
-

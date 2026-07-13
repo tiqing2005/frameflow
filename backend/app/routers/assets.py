@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
+
+from ..errors import request_id
+from ..schemas import AssetPatch
+from ..serializers import asset_dict
+from ..services import create_asset, list_assets, patch_asset
+from ._deps import SessionDep, SettingsDep
+
+router = APIRouter(prefix="/api/v1", tags=["assets"])
+
+
+@router.get("/assets")
+def get_assets(
+    session: SessionDep,
+    q: str | None = Query(None, max_length=100),
+    kind: str | None = Query(None, pattern="^(image|video)$"),
+    tag: str | None = Query(None, max_length=60),
+    include_inactive: bool = False,
+):
+    return list_assets(session, q, kind, tag, include_inactive)
+
+
+@router.post("/assets", status_code=status.HTTP_201_CREATED)
+def post_asset(
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+    file: Annotated[UploadFile, File()],
+    name: Annotated[str, Form(min_length=1, max_length=160)],
+    tags: Annotated[str, Form()] = "",
+    keywords: Annotated[str, Form()] = "",
+):
+    content = file.file.read(settings.max_upload_bytes + 1)
+    asset = create_asset(
+        session,
+        settings,
+        file.filename or "asset",
+        file.content_type,
+        content,
+        name,
+        tags,
+        keywords,
+        request_id(request),
+    )
+    return asset_dict(asset)
+
+
+@router.patch("/assets/{asset_id}")
+def update_asset(asset_id: str, payload: AssetPatch, request: Request, session: SessionDep):
+    return asset_dict(patch_asset(session, asset_id, payload, request_id(request)))

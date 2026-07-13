@@ -12,6 +12,7 @@ from .models import (
     Job,
     JobEvent,
     Project,
+    PreviewRender,
     Recommendation,
     Segment,
     Selection,
@@ -78,6 +79,7 @@ def job_dict(job: Job) -> dict[str, Any]:
     return {
         "id": job.id,
         "project_id": job.project_id,
+        "kind": job.kind,
         "status": job.status,
         "stage": job.stage,
         "progress": job.progress,
@@ -90,6 +92,23 @@ def job_dict(job: Job) -> dict[str, Any]:
         "started_at": iso(job.started_at),
         "finished_at": iso(job.finished_at),
         "updated_at": iso(job.updated_at),
+    }
+
+
+def preview_dict(preview: PreviewRender, job: Job | None = None) -> dict[str, Any]:
+    return {
+        "id": preview.id,
+        "project_id": preview.project_id,
+        "job_id": preview.job_id,
+        "input_hash": preview.input_hash,
+        "status": preview.status,
+        "output_url": preview.output_url,
+        "duration_ms": preview.duration_ms,
+        "segment_count": preview.segment_count,
+        "error_message": preview.error_message,
+        "job": job_dict(job) if job is not None else None,
+        "created_at": iso(preview.created_at),
+        "updated_at": iso(preview.updated_at),
     }
 
 

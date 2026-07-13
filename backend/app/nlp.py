@@ -224,20 +224,68 @@ class RankedAsset:
     is_diversity_filler: bool
 
 
-def rank_assets(
+@dataclass(frozen=True, slots=True)
+class RankingTrace:
+    provider: str
+    model: str
+    source: str
+    degraded: bool = False
+    error_message: str | None = None
+
+
+def rank_assets_with_trace(
     text: str,
     topic: str,
     keywords: Sequence[str],
     assets: Sequence[dict],
     minimum: int = 3,
-) -> list[RankedAsset]:
+    semantic_scorer: "object | None" = None,
+) -> tuple[list[RankedAsset], RankingTrace]:
     if not assets:
-        return []
+        return [], RankingTrace("rules", "char-ngram-tfidf", "char-ngram")
     asset_docs = [
         " ".join([str(asset.get("name", "")), *asset.get("tags", []), *asset.get("keywords", [])])
         for asset in assets
     ]
-    tfidf_scores = char_ngram_tfidf_cosines(" ".join([text, topic, *keywords]), asset_docs)
+    query_text = " ".join([text, topic, *keywords])
+    # The 0.55 weight feeds the "tfidf_score" column/display slot. With an
+    # embedding scorer it carries true semantic cosine; otherwise it falls back
+    # to the deterministic character n-gram TF-IDF cosine.
+    if semantic_scorer is not None:
+        try:
+            tfidf_scores = semantic_scorer.cosine_scores(query_text, asset_docs)
+            if len(tfidf_scores) != len(assets):
+                raise ValueError(
+                    f"embedding vector count mismatch: expected {len(assets)}, got {len(tfidf_scores)}"
+                )
+            if any(not math.isfinite(float(value)) for value in tfidf_scores):
+                raise ValueError("embedding scorer returned a non-finite similarity")
+            similarity_label = "向量语义相似"
+            trace = RankingTrace(
+                provider=str(getattr(semantic_scorer, "provider", "embedding")),
+                model=str(
+                    getattr(
+                        semantic_scorer,
+                        "model",
+                        getattr(semantic_scorer, "name", "embedding"),
+                    )
+                ),
+                source="embedding",
+            )
+        except Exception as exc:
+            tfidf_scores = char_ngram_tfidf_cosines(query_text, asset_docs)
+            similarity_label = "字符语义相似"
+            trace = RankingTrace(
+                provider="rules",
+                model="char-ngram-tfidf",
+                source="char-ngram",
+                degraded=True,
+                error_message=f"{type(exc).__name__}: {exc}"[:500],
+            )
+    else:
+        tfidf_scores = char_ngram_tfidf_cosines(query_text, asset_docs)
+        similarity_label = "字符语义相似"
+        trace = RankingTrace("rules", "char-ngram-tfidf", "char-ngram")
     query_keywords = normalize_terms(keywords or extract_keywords(text))
     query_topic_terms = normalize_terms([topic, *extract_keywords(topic, top_k=3)])
     scored: list[dict] = []
@@ -281,12 +329,12 @@ def rank_assets(
             if item["matched"]:
                 parts.append(f"命中关键词「{'、'.join(item['matched'])}」")
             if item["tfidf"] >= 0.02:
-                parts.append("字幕与素材描述存在字符语义相似")
+                parts.append(f"字幕与素材描述存在{similarity_label}")
             if item["tag"] > 0:
                 parts.append("主题与素材标签一致")
             explanation = "；".join(parts) + "。"
             if not parts:
-                explanation = "综合字符语义与素材覆盖度进入候选。"
+                explanation = "综合语义与素材覆盖度进入候选。"
         results.append(
             RankedAsset(
                 asset_id=item["asset_id"],
@@ -300,5 +348,23 @@ def rank_assets(
                 is_diversity_filler=filler,
             )
         )
-    return results
+    return results, trace
 
+
+def rank_assets(
+    text: str,
+    topic: str,
+    keywords: Sequence[str],
+    assets: Sequence[dict],
+    minimum: int = 3,
+    semantic_scorer: "object | None" = None,
+) -> list[RankedAsset]:
+    results, _trace = rank_assets_with_trace(
+        text,
+        topic,
+        keywords,
+        assets,
+        minimum=minimum,
+        semantic_scorer=semantic_scorer,
+    )
+    return results

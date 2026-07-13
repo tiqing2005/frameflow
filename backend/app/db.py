@@ -54,6 +54,17 @@ class Database:
                             "INTEGER NOT NULL DEFAULT 0"
                         )
                     )
+            if "kind" not in columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE jobs ADD COLUMN kind "
+                            "VARCHAR(24) NOT NULL DEFAULT 'pipeline'"
+                        )
+                    )
+                    connection.execute(
+                        text("CREATE INDEX IF NOT EXISTS ix_jobs_kind ON jobs (kind)")
+                    )
         from .seed import seed_assets
 
         with self.session() as session:

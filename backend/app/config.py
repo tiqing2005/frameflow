@@ -19,6 +19,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(slots=True)
 class Settings:
     data_dir: Path
@@ -45,6 +52,18 @@ class Settings:
     llm_api_key: str | None = None
     llm_model: str = "gpt-4.1-mini"
     llm_timeout: float = 20.0
+    embedding_provider: str = "auto"
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_base_url: str = "https://api.openai.com/v1"
+    embedding_api_key: str | None = None
+    embedding_timeout: float = 30.0
+    embedding_device: str = "cpu"
+    demo_mode: bool = False
+    preview_timeout: float = 300.0
+    preview_max_seconds: int = 180
+    max_subtitle_chars: int = 200_000
+    read_rate_limit_per_minute: int = 240
+    write_rate_limit_per_minute: int = 60
     frontend_dir: Path | None = None
 
     @classmethod
@@ -96,6 +115,24 @@ class Settings:
             llm_api_key=os.getenv("LLM_API_KEY", "").strip() or None,
             llm_model=os.getenv("LLM_MODEL", "gpt-4.1-mini").strip(),
             llm_timeout=max(0.1, _float("LLM_TIMEOUT", 20.0)),
+            embedding_provider=os.getenv("EMBEDDING_PROVIDER", "auto").strip().lower(),
+            embedding_model=os.getenv("FRAMEFLOW_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip(),
+            embedding_base_url=os.getenv(
+                "FRAMEFLOW_EMBEDDING_BASE_URL", "https://api.openai.com/v1"
+            ).rstrip("/"),
+            embedding_api_key=os.getenv("FRAMEFLOW_EMBEDDING_API_KEY", "").strip() or None,
+            embedding_timeout=max(0.1, _float("FRAMEFLOW_EMBEDDING_TIMEOUT", 30.0)),
+            embedding_device=os.getenv("FRAMEFLOW_EMBEDDING_DEVICE", "cpu").strip(),
+            demo_mode=_bool("DEMO_MODE", False),
+            preview_timeout=max(5.0, _float("FRAMEFLOW_PREVIEW_TIMEOUT", 300.0)),
+            preview_max_seconds=max(5, _int("FRAMEFLOW_PREVIEW_MAX_SECONDS", 180)),
+            max_subtitle_chars=max(1_000, _int("FRAMEFLOW_MAX_SUBTITLE_CHARS", 200_000)),
+            read_rate_limit_per_minute=max(
+                0, _int("FRAMEFLOW_READ_RATE_LIMIT_PER_MINUTE", 240)
+            ),
+            write_rate_limit_per_minute=max(
+                0, _int("FRAMEFLOW_WRITE_RATE_LIMIT_PER_MINUTE", 60)
+            ),
             frontend_dir=frontend_dir,
         )
 
@@ -104,6 +141,8 @@ class Settings:
         (self.data_dir / "media" / "seed").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "media" / "uploads" / "sources").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "media" / "uploads" / "assets").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "media" / "previews").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "private" / "sources").mkdir(parents=True, exist_ok=True)
         (self.whisper_download_root or self.data_dir / "models" / "whisper").mkdir(
             parents=True, exist_ok=True
         )

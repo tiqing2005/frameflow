@@ -24,6 +24,10 @@ test = [
 ]
 local-asr = [
   "faster-whisper>=1.1,<2",
+  "opencc-python-reimplemented>=0.1.7,<1",
+]
+local-embeddings = [
+  "sentence-transformers>=3,<5",
 ]
 
 [tool.setuptools.packages.find]
@@ -32,4 +36,7 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+markers = [
+  "live: tests that hit real external providers (LLM/ASR/embedding). Skipped unless FRAMEFLOW_RUN_LIVE=1.",
+]
+addopts = "-q -m 'not live'"

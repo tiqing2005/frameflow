@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import mimetypes
+import re
+import uuid
+from pathlib import Path
+
+from sqlalchemy import event, func, or_, select
+from sqlalchemy.orm import Session
+
+from ..config import Settings
+from ..errors import APIError
+from ..llm import suggest_asset_tags_detailed
+from ..models import AIRun, Asset
+from ..nlp import extract_keywords, infer_topic
+from ..schemas import AssetPatch
+from ..serializers import asset_dict
+from .common import _get_asset, add_audit, dumps, stable_hash
+
+ASSET_EXTENSIONS = {
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
+    ".gif": "image",
+    ".mp4": "video",
+    ".webm": "video",
+    ".mov": "video",
+}
+
+MINIMUM_ACTIVE_ASSETS = 3
+
+
+def _valid_asset_signature(content: bytes, suffix: str) -> bool:
+    head = content[:64]
+    if suffix == ".png":
+        return head.startswith(b"\x89PNG\r\n\x1a\n")
+    if suffix in {".jpg", ".jpeg"}:
+        return head.startswith(b"\xff\xd8\xff")
+    if suffix == ".gif":
+        return head.startswith((b"GIF87a", b"GIF89a"))
+    if suffix == ".webp":
+        return head.startswith(b"RIFF") and head[8:12] == b"WEBP"
+    if suffix in {".mp4", ".mov"}:
+        return len(head) >= 12 and head[4:8] == b"ftyp"
+    if suffix == ".webm":
+        return head.startswith(b"\x1a\x45\xdf\xa3")
+    return False
+
+
+def _parse_csv(value: str) -> list[str]:
+    values = re.split(r"[,，;；\n]", value or "")
+    return list(dict.fromkeys(item.strip()[:60] for item in values if item.strip()))[:20]
+
+
+def list_assets(
+    session: Session, q: str | None, kind: str | None, tag: str | None, include_inactive: bool = False
+) -> dict:
+    statement = select(Asset)
+    count_statement = select(func.count()).select_from(Asset)
+    filters = []
+    if not include_inactive:
+        filters.append(Asset.active.is_(True))
+    if q and q.strip():
+        query = f"%{q.strip().lower()}%"
+        filters.append(
+            or_(
+                func.lower(Asset.name).like(query),
+                func.lower(Asset.tags_json).like(query),
+                func.lower(Asset.keywords_json).like(query),
+            )
+        )
+    if kind:
+        filters.append(Asset.kind == kind)
+    if tag and tag.strip():
+        filters.append(func.lower(Asset.tags_json).like(f"%{tag.strip().lower()}%"))
+    if filters:
+        statement = statement.where(*filters)
+        count_statement = count_statement.where(*filters)
+    items = session.scalars(statement.order_by(Asset.is_seed.desc(), Asset.created_at.desc())).all()
+    total = session.scalar(count_statement) or 0
+    return {"items": [asset_dict(asset) for asset in items], "total": total}
+
+
+def create_asset(
+    session: Session,
+    settings: Settings,
+    filename: str,
+    content_type: str | None,
+    content: bytes,
+    name: str,
+    tags: str,
+    keywords: str,
+    request_id: str | None,
+) -> Asset:
+    name = name.strip()
+    if not name or len(name) > 160:
+        raise APIError(422, "VALIDATION_ERROR", "素材名称长度需为 1–160 个字符")
+    safe_name = Path(filename or "asset").name[:255]
+    suffix = Path(safe_name).suffix.lower()
+    kind = ASSET_EXTENSIONS.get(suffix)
+    if kind is None:
+        raise APIError(415, "UNSUPPORTED_ASSET_TYPE", "仅支持常见图片或 MP4/WebM/MOV 视频素材")
+    if not content:
+        raise APIError(422, "EMPTY_UPLOAD", "上传文件不能为空")
+    if len(content) > settings.max_upload_bytes:
+        raise APIError(413, "UPLOAD_TOO_LARGE", "上传文件超过大小限制")
+    if not _valid_asset_signature(content, suffix):
+        raise APIError(415, "ASSET_SIGNATURE_MISMATCH", "素材内容与扩展名不匹配；用户上传 SVG 已禁用以避免脚本风险")
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    path = settings.data_dir / "media" / "uploads" / "assets" / stored_name
+    path.write_bytes(content)
+    def cleanup_after_rollback(_session: Session) -> None:
+        path.unlink(missing_ok=True)
+
+    event.listen(session, "after_rollback", cleanup_after_rollback, once=True)
+    try:
+        tag_values = _parse_csv(tags)
+        keyword_values = _parse_csv(keywords)
+        suggestion = None
+        if not tag_values or not keyword_values:
+            # Auto-suggest tags/keywords via the LLM when configured; falls back
+            # to rule extraction on any failure (degrades to current behavior).
+            suggestion = suggest_asset_tags_detailed(name, " ".join(tag_values) or name, settings)
+            suggested_tags, suggested_keywords = suggestion.tags, suggestion.keywords
+            if not tag_values:
+                tag_values = suggested_tags
+            if not keyword_values:
+                keyword_values = suggested_keywords or extract_keywords(name + " " + " ".join(tag_values))
+            if not tag_values:
+                # Keep zero-key/offline mode genuinely useful: the deterministic
+                # fallback must produce both searchable keywords and at least one
+                # topic tag, not an empty tag list advertised as auto-tagging.
+                tag_values = [infer_topic(name, keyword_values)]
+        asset = Asset(
+            name=name,
+            kind=kind,
+            public_url=f"/media/uploads/assets/{stored_name}",
+            storage_path=str(path),
+            mime_type=content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
+            size_bytes=len(content),
+            tags_json=dumps(tag_values),
+            keywords_json=dumps(keyword_values),
+            is_seed=False,
+            active=True,
+        )
+        session.add(asset)
+        session.flush()
+        if suggestion is not None:
+            session.add(
+                AIRun(
+                    operation="asset_tagging",
+                    provider=suggestion.provider,
+                    model=suggestion.model,
+                    prompt_version="asset-tags-v1",
+                    input_hash=stable_hash(name, tags, keywords, "asset-tags-v1"),
+                    status=suggestion.status,
+                    degraded=suggestion.degraded,
+                    duration_ms=suggestion.duration_ms,
+                    output_summary_json=dumps(
+                        {
+                            "asset_id": asset.id,
+                            "generated_tags": tag_values,
+                            "generated_keywords": keyword_values,
+                            "tokens": suggestion.usage or {},
+                            "fallback": suggestion.degraded,
+                        }
+                    ),
+                    error_message=suggestion.error_message,
+                )
+            )
+        add_audit(
+            session,
+            None,
+            "asset",
+            asset.id,
+            "asset.created",
+            after=asset_dict(asset),
+            request_id=request_id,
+        )
+        return asset
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def patch_asset(
+    session: Session, asset_id: str, payload: AssetPatch, request_id: str | None
+) -> Asset:
+    asset = _get_asset(session, asset_id)
+    before = asset_dict(asset)
+    if payload.name is not None:
+        asset.name = payload.name
+    if payload.tags is not None:
+        asset.tags_json = dumps(payload.tags)
+    if payload.keywords is not None:
+        asset.keywords_json = dumps(payload.keywords)
+    if payload.active is not None:
+        if asset.is_seed and not payload.active:
+            active_count = session.scalar(
+                select(func.count()).select_from(Asset).where(Asset.active.is_(True))
+            ) or 0
+            if active_count <= MINIMUM_ACTIVE_ASSETS:
+                raise APIError(409, "MINIMUM_ASSET_GUARD", "至少保留 3 个启用素材")
+        asset.active = payload.active
+    session.flush()
+    add_audit(
+        session,
+        None,
+        "asset",
+        asset.id,
+        "asset.updated",
+        before=before,
+        after=asset_dict(asset),
+        request_id=request_id,
+    )
+    return asset
