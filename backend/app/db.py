@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Settings
@@ -41,6 +41,19 @@ class Database:
 
     def initialize(self) -> None:
         Base.metadata.create_all(self.engine)
+        # create_all does not evolve an existing demo SQLite database. Keep the
+        # one required fencing column backward compatible without a migration
+        # service or external dependency.
+        if self.settings.database_url.startswith("sqlite"):
+            columns = {column["name"] for column in inspect(self.engine).get_columns("jobs")}
+            if "execution_generation" not in columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE jobs ADD COLUMN execution_generation "
+                            "INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
         from .seed import seed_assets
 
         with self.session() as session:
@@ -57,4 +70,3 @@ class Database:
             raise
         finally:
             session.close()
-

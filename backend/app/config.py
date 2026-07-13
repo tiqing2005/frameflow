@@ -27,14 +27,24 @@ class Settings:
     max_upload_bytes: int = 100 * 1024 * 1024
     worker_poll_seconds: float = 0.75
     stage_delay_seconds: float = 0.18
-    job_lease_seconds: int = 300
+    job_lease_seconds: float = 300.0
+    job_max_execution_seconds: float = 1800.0
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     asr_model: str = "gpt-4o-mini-transcribe"
     asr_provider: str = "auto"
+    asr_timeout: float = 120.0
+    local_asr_timeout: float = 600.0
     whisper_model: str = "tiny"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    whisper_download_root: Path | None = None
+    hf_home: Path | None = None
+    llm_provider: str = "rules"
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str | None = None
+    llm_model: str = "gpt-4.1-mini"
+    llm_timeout: float = 20.0
     frontend_dir: Path | None = None
 
     @classmethod
@@ -55,6 +65,10 @@ class Settings:
         frontend_raw = os.getenv("FRAMEFLOW_FRONTEND_DIR")
         frontend_dir = Path(frontend_raw).resolve() if frontend_raw else backend_dir.parent / "frontend" / "dist"
         key = os.getenv("OPENAI_API_KEY", "").strip() or None
+        whisper_download_root = Path(
+            os.getenv("FRAMEFLOW_WHISPER_DOWNLOAD_ROOT", data_dir / "models" / "whisper")
+        ).resolve()
+        hf_home = Path(os.getenv("HF_HOME", data_dir / "models" / "huggingface")).resolve()
         return cls(
             data_dir=data_dir,
             database_url=database_url,
@@ -62,14 +76,26 @@ class Settings:
             max_upload_bytes=_int("FRAMEFLOW_MAX_UPLOAD_MB", 100) * 1024 * 1024,
             worker_poll_seconds=_float("FRAMEFLOW_WORKER_POLL_SECONDS", 0.75),
             stage_delay_seconds=_float("FRAMEFLOW_STAGE_DELAY_SECONDS", 0.18),
-            job_lease_seconds=_int("FRAMEFLOW_JOB_LEASE_SECONDS", 300),
+            job_lease_seconds=max(0.3, _float("FRAMEFLOW_JOB_LEASE_SECONDS", 300.0)),
+            job_max_execution_seconds=max(
+                0.1, _float("FRAMEFLOW_JOB_MAX_EXECUTION_SECONDS", 1800.0)
+            ),
             openai_api_key=key,
             openai_base_url=os.getenv("FRAMEFLOW_OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
             asr_model=os.getenv("FRAMEFLOW_ASR_MODEL", "gpt-4o-mini-transcribe"),
             asr_provider=os.getenv("FRAMEFLOW_ASR_PROVIDER", "auto").strip().lower(),
+            asr_timeout=max(0.1, _float("FRAMEFLOW_ASR_TIMEOUT", 120.0)),
+            local_asr_timeout=max(0.1, _float("FRAMEFLOW_LOCAL_ASR_TIMEOUT", 600.0)),
             whisper_model=os.getenv("FRAMEFLOW_WHISPER_MODEL", "tiny").strip(),
             whisper_device=os.getenv("FRAMEFLOW_WHISPER_DEVICE", "cpu").strip(),
             whisper_compute_type=os.getenv("FRAMEFLOW_WHISPER_COMPUTE_TYPE", "int8").strip(),
+            whisper_download_root=whisper_download_root,
+            hf_home=hf_home,
+            llm_provider=os.getenv("LLM_PROVIDER", "rules").strip().lower(),
+            llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+            llm_api_key=os.getenv("LLM_API_KEY", "").strip() or None,
+            llm_model=os.getenv("LLM_MODEL", "gpt-4.1-mini").strip(),
+            llm_timeout=max(0.1, _float("LLM_TIMEOUT", 20.0)),
             frontend_dir=frontend_dir,
         )
 
@@ -78,3 +104,7 @@ class Settings:
         (self.data_dir / "media" / "seed").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "media" / "uploads" / "sources").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "media" / "uploads" / "assets").mkdir(parents=True, exist_ok=True)
+        (self.whisper_download_root or self.data_dir / "models" / "whisper").mkdir(
+            parents=True, exist_ok=True
+        )
+        (self.hf_home or self.data_dir / "models" / "huggingface").mkdir(parents=True, exist_ok=True)

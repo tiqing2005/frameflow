@@ -72,6 +72,7 @@ class Job(Base):
     stage: Mapped[str] = mapped_column(String(32), default="validating", nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    execution_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     lease_owner: Mapped[str | None] = mapped_column(String(120))
@@ -261,4 +262,3 @@ class WorkerHeartbeat(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     worker_id: Mapped[str] = mapped_column(String(120), nullable=False)
     heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-

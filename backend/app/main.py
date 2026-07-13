@@ -28,7 +28,7 @@ from . import __version__
 from .config import Settings
 from .db import Database
 from .errors import APIError, install_error_handlers, request_id
-from .models import Asset, JobEvent, Segment, WorkerHeartbeat
+from .models import Asset, Job, JobEvent, Segment, WorkerHeartbeat
 from .schemas import AssetPatch, FaultNext, SegmentOrder, SegmentPatch, SelectionPut, TextProjectCreate
 from .serializers import asset_dict, event_dict
 from .services import (
@@ -136,6 +136,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ) or 0
         heartbeat = session.get(WorkerHeartbeat, 1)
         worker_online = False
+        worker_state = "dead"
+        current_job_id = None
         last_heartbeat = None
         if heartbeat:
             value = heartbeat.heartbeat_at
@@ -144,14 +146,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             age = (datetime.now(timezone.utc) - value.astimezone(timezone.utc)).total_seconds()
             worker_online = age < max(15.0, settings.worker_poll_seconds * 8)
             last_heartbeat = value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-        return {
-            "status": "ready" if asset_count >= 12 else "degraded",
-            "checks": {
-                "database": "ok",
-                "seed_assets": {"ok": asset_count >= 12, "count": asset_count},
-                "worker": {"online": worker_online, "last_heartbeat": last_heartbeat},
+            if worker_online:
+                active_job = session.scalar(
+                    select(Job)
+                    .where(
+                        Job.status == "running",
+                        Job.lease_owner == heartbeat.worker_id,
+                        Job.lease_expires_at >= datetime.now(timezone.utc),
+                    )
+                    .order_by(Job.started_at, Job.created_at)
+                    .limit(1)
+                )
+                worker_state = "busy" if active_job else "idle"
+                current_job_id = active_job.id if active_job else None
+        checks = {
+            "database": "ok",
+            "seed_assets": {"ok": asset_count >= 12, "count": asset_count},
+            "worker": {
+                "online": worker_online,
+                "state": worker_state,
+                "current_job_id": current_job_id,
+                "last_heartbeat": last_heartbeat,
             },
         }
+        if asset_count < 12 or not worker_online:
+            raise APIError(
+                503,
+                "NOT_READY",
+                "服务依赖尚未就绪",
+                retryable=True,
+                details={"checks": checks},
+            )
+        return {"status": "ready", "checks": checks}
 
     @api.get("/health/live", tags=["health"])
     def health_live():

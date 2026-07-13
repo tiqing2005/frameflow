@@ -9,9 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from .asr import REARMABLE_ASR_ERROR_CODES
 from .config import Settings
 from .errors import APIError
 from .models import (
@@ -110,7 +111,9 @@ def add_audit(
     return event
 
 
-def _existing_idempotent(session: Session, key: str | None) -> tuple[Project, Job] | None:
+def _existing_idempotent(
+    session: Session, key: str | None, request_hash: str
+) -> tuple[Project, Job] | None:
     if not key:
         return None
     key = key.strip()
@@ -125,6 +128,13 @@ def _existing_idempotent(session: Session, key: str | None) -> tuple[Project, Jo
     )
     if record is None:
         return None
+    if record.request_hash != request_hash:
+        raise APIError(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "相同 Idempotency-Key 已用于不同的请求内容",
+            details={"scope": record.scope},
+        )
     project = session.get(Project, record.resource_id)
     job = session.get(Job, record.job_id)
     if project is None or job is None:
@@ -141,11 +151,13 @@ def create_text_project(
     idempotency_key: str | None,
     request_id: str | None,
 ) -> tuple[Project, Job, bool]:
-    existing = _existing_idempotent(session, idempotency_key)
+    title = title.strip()
+    text = text.strip()
+    content_hash = stable_hash(title, text)
+    existing = _existing_idempotent(session, idempotency_key, content_hash)
     if existing:
         return existing[0], existing[1], True
-    content_hash = stable_hash(title, text)
-    project = Project(title=title.strip(), status="queued", input_kind="text")
+    project = Project(title=title, status="queued", input_kind="text")
     session.add(project)
     session.flush()
     source = Source(
@@ -236,9 +248,6 @@ def create_upload_project(
     idempotency_key: str | None,
     request_id: str | None,
 ) -> tuple[Project, Job, bool]:
-    existing = _existing_idempotent(session, idempotency_key)
-    if existing:
-        return existing[0], existing[1], True
     title = title.strip()
     if not title or len(title) > 160:
         raise APIError(422, "VALIDATION_ERROR", "标题长度需为 1–160 个字符")
@@ -254,6 +263,10 @@ def create_upload_project(
     if not _valid_source_signature(content, suffix):
         raise APIError(415, "SOURCE_SIGNATURE_MISMATCH", "文件内容与扩展名不匹配或编码不受支持")
     sha = hashlib.sha256(content).hexdigest()
+    request_hash = stable_hash(title, sha)
+    existing = _existing_idempotent(session, idempotency_key, request_hash)
+    if existing:
+        return existing[0], existing[1], True
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     path = settings.data_dir / "media" / "uploads" / "sources" / stored_name
     path.write_bytes(content)
@@ -283,7 +296,7 @@ def create_upload_project(
                 IdempotencyRecord(
                     scope="project:create",
                     key=idempotency_key.strip(),
-                    request_hash=stable_hash(title, sha),
+                    request_hash=request_hash,
                     resource_id=project.id,
                     job_id=job.id,
                 )
@@ -403,27 +416,54 @@ def get_job_detail(session: Session, job_id: str) -> dict:
 
 def retry_job(session: Session, job_id: str, request_id: str | None) -> dict:
     job = _get_job(session, job_id)
-    if job.status in {"queued", "running"}:
-        return get_job_detail(session, job.id)
-    if job.status == "succeeded":
-        raise APIError(409, "JOB_ALREADY_SUCCEEDED", "已成功的任务无需重试")
-    before = {"status": job.status, "error_code": job.error_code, "attempt": job.attempt}
-    job.status = "queued"
-    job.stage = "validating"
-    job.progress = 0
-    job.error_code = None
-    job.error_message = None
-    job.retryable = False
-    job.finished_at = None
-    job.next_run_at = utcnow()
-    job.lease_owner = None
-    job.lease_expires_at = None
+    rearmable = job.error_code in REARMABLE_ASR_ERROR_CODES
+    if job.status != "failed":
+        raise APIError(409, "INVALID_STATE", "只有失败且明确可重试的任务才能重试")
+    if not job.retryable and not rearmable:
+        raise APIError(409, "JOB_NOT_RETRYABLE", "该任务失败原因不可重试")
+    next_max_attempts = job.max_attempts
     if job.attempt >= job.max_attempts:
-        job.max_attempts = job.attempt + 1
+        if not rearmable:
+            raise APIError(409, "JOB_ATTEMPTS_EXHAUSTED", "任务已达到最大尝试次数")
+        next_max_attempts = job.attempt + 1
+    before = {
+        "status": job.status,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "retryable": job.retryable,
+        "attempt": job.attempt,
+    }
+    result = session.execute(
+        update(Job)
+        .where(Job.id == job.id, Job.status == "failed", Job.attempt == job.attempt)
+        .values(
+            status="queued",
+            stage="validating",
+            retryable=True if rearmable else job.retryable,
+            max_attempts=next_max_attempts,
+            finished_at=None,
+            next_run_at=utcnow(),
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+    )
+    if result.rowcount != 1:
+        session.expire_all()
+        raise APIError(409, "JOB_RETRY_CONFLICT", "任务状态已变化，请刷新后再试")
+    session.expire(job)
+    job = session.get(Job, job.id)
     project = _get_project(session, job.project_id)
     project.status = "queued"
     session.add(
-        JobEvent(job_id=job.id, stage="validating", progress=0, message="已人工重试，等待 Worker 再次领取")
+        JobEvent(
+            job_id=job.id,
+            stage="validating",
+            progress=job.progress,
+            message=(
+                f"已请求重新执行原任务；保留第 {job.attempt} 次失败"
+                f"（{job.error_code or 'UNKNOWN'}：{job.error_message or '未提供错误原因'}）"
+            ),
+        )
     )
     add_audit(
         session,
@@ -432,7 +472,12 @@ def retry_job(session: Session, job_id: str, request_id: str | None) -> dict:
         job.id,
         "job.retried",
         before=before,
-        after={"status": "queued", "next_attempt": job.attempt + 1},
+        after={
+            "status": "queued",
+            "next_attempt": job.attempt + 1,
+            "project_reused": True,
+            "source_reused": True,
+        },
         request_id=request_id,
     )
     session.flush()
@@ -446,6 +491,7 @@ def cancel_job(session: Session, job_id: str, request_id: str | None) -> dict:
     if job.status in {"succeeded", "failed"}:
         raise APIError(409, "JOB_NOT_CANCELABLE", "只有排队中或运行中的任务可以取消")
     job.status = "canceled"
+    job.retryable = False
     job.finished_at = utcnow()
     job.lease_owner = None
     job.lease_expires_at = None

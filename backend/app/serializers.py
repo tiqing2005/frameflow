@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from .asr import REARMABLE_ASR_ERROR_CODES
 from .models import (
     AIRun,
     Asset,
@@ -73,6 +74,7 @@ def source_dict(source: Source | None) -> dict[str, Any] | None:
 
 
 def job_dict(job: Job) -> dict[str, Any]:
+    rearmable = job.status == "failed" and job.error_code in REARMABLE_ASR_ERROR_CODES
     return {
         "id": job.id,
         "project_id": job.project_id,
@@ -80,10 +82,10 @@ def job_dict(job: Job) -> dict[str, Any]:
         "stage": job.stage,
         "progress": job.progress,
         "attempt": job.attempt,
-        "max_attempts": job.max_attempts,
+        "max_attempts": max(job.max_attempts, job.attempt + 1) if rearmable else job.max_attempts,
         "error_code": job.error_code,
         "error_message": job.error_message,
-        "retryable": job.retryable,
+        "retryable": job.retryable or rearmable,
         "created_at": iso(job.created_at),
         "started_at": iso(job.started_at),
         "finished_at": iso(job.finished_at),
@@ -187,7 +189,60 @@ def audit_dict(event: AuditEvent) -> dict[str, Any]:
     }
 
 
+def _token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 and value.is_integer() else None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized.isdigit():
+            return int(normalized)
+    return None
+
+
+def _first_token_count(*values: Any) -> int | None:
+    for value in values:
+        count = _token_count(value)
+        if count is not None:
+            return count
+    return None
+
+
+def _run_output_summary(
+    value: str | None,
+) -> tuple[dict[str, Any], int | None, int | None, int | None]:
+    loaded = loads(value, {})
+    summary = dict(loaded) if isinstance(loaded, dict) else {}
+    historical = summary.pop("tokens", None)
+    historical = historical if isinstance(historical, dict) else {}
+
+    input_tokens = _first_token_count(
+        summary.pop("input_tokens", None),
+        historical.get("input_tokens"),
+        historical.get("prompt_tokens"),
+    )
+    output_tokens = _first_token_count(
+        summary.pop("output_tokens", None),
+        historical.get("output_tokens"),
+        historical.get("completion_tokens"),
+    )
+    total_tokens = _first_token_count(
+        summary.pop("total_tokens", None),
+        historical.get("total_tokens"),
+    )
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    return summary, input_tokens, output_tokens, total_tokens
+
+
 def run_dict(run: AIRun) -> dict[str, Any]:
+    output_summary, input_tokens, output_tokens, total_tokens = _run_output_summary(
+        run.output_summary_json
+    )
     return {
         "id": run.id,
         "project_id": run.project_id,
@@ -202,7 +257,10 @@ def run_dict(run: AIRun) -> dict[str, Any]:
         "degraded": run.degraded,
         "duration_ms": run.duration_ms,
         "latency_ms": run.duration_ms,
-        "output_summary": loads(run.output_summary_json, {}),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "output_summary": output_summary,
         "error_message": run.error_message,
         "created_at": iso(run.created_at),
     }
