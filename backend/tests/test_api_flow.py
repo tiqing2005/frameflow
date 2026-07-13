@@ -3,7 +3,10 @@ from __future__ import annotations
 import base64
 from datetime import timedelta
 
-from app.models import Job, Project, utcnow
+from sqlalchemy import func, select
+
+from app.models import Job, JobEvent, Project, Source, utcnow
+from app.worker import DurableWorker, WorkerFailure
 
 
 SAMPLE_TEXT = (
@@ -28,10 +31,19 @@ def test_create_job_result_edit_select_reorder_and_refresh(runtime):
     client, worker, _database, _settings = runtime
 
     first = create_project(client)
-    replay = create_project(client, title="会被幂等键忽略", text="不同请求内容也不重复创建")
+    replay = create_project(client)
     assert replay["project"]["id"] == first["project"]["id"]
     assert replay["job"]["id"] == first["job"]["id"]
     assert replay["idempotent_replay"] is True
+    assert client.get("/api/v1/projects").json()["total"] == 1
+
+    conflict = client.post(
+        "/api/v1/projects/text",
+        json={"title": "不同请求", "text": "相同幂等键不能复用到不同内容。"},
+        headers={"Idempotency-Key": "flow-key"},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
     assert client.get("/api/v1/projects").json()["total"] == 1
 
     queued = client.get(f"/api/v1/jobs/{first['job']['id']}")
@@ -156,10 +168,83 @@ def test_fault_failure_manual_retry_then_success(runtime):
     retry = client.post(f"/api/v1/jobs/{created['job']['id']}/retry")
     assert retry.status_code == 202
     assert retry.json()["job"]["status"] == "queued"
+    duplicate_retry = client.post(f"/api/v1/jobs/{created['job']['id']}/retry")
+    assert duplicate_retry.status_code == 409
+    assert duplicate_retry.json()["code"] == "INVALID_STATE"
     worker.run_once()
     succeeded = client.get(f"/api/v1/jobs/{created['job']['id']}").json()
     assert succeeded["job"]["status"] == "succeeded"
     assert succeeded["job"]["attempt"] == 2
+
+
+def test_asr_configuration_fix_retries_same_project_without_reupload(runtime, monkeypatch):
+    client, worker, database, settings = runtime
+    settings.asr_provider = "openai"
+    settings.openai_api_key = None
+    created_response = client.post(
+        "/api/v1/projects/upload",
+        data={"title": "ASR 配置修复后重试"},
+        files={"file": ("config-retry.wav", b"RIFF\x04\x00\x00\x00WAVE", "audio/wav")},
+        headers={"Idempotency-Key": "asr-config-retry"},
+    )
+    assert created_response.status_code == 202, created_response.text
+    created = created_response.json()
+    project_id = created["project"]["id"]
+    job_id = created["job"]["id"]
+
+    with database.session() as session:
+        original_source = session.scalar(select(Source).where(Source.project_id == project_id))
+        original_source_id = original_source.id
+        original_storage_path = original_source.storage_path
+        original_sha256 = original_source.sha256
+
+    assert worker.run_once() is True
+    failed = client.get(f"/api/v1/jobs/{job_id}").json()
+    assert failed["job"]["status"] == "failed"
+    assert failed["job"]["attempt"] == 1
+    assert failed["job"]["error_code"] == "ASR_OPENAI_KEY_MISSING"
+    assert failed["job"]["retryable"] is True
+    assert any(
+        "配置错误 / ASR_OPENAI_KEY_MISSING" in event["message"]
+        for event in failed["events"]
+    )
+    failed_event_ids = {event["id"] for event in failed["events"]}
+
+    settings.openai_api_key = "fixed-test-key"
+
+    def successful_provider_transcribe(_path, _mime_type, active_settings):
+        assert active_settings.openai_api_key == "fixed-test-key"
+        return SAMPLE_TEXT, "openai-compatible/test-asr"
+
+    monkeypatch.setattr("app.asr._openai_transcribe", successful_provider_transcribe)
+    retry = client.post(f"/api/v1/jobs/{job_id}/retry")
+    assert retry.status_code == 202, retry.text
+    retried = retry.json()
+    assert retried["job"]["id"] == job_id
+    assert retried["job"]["project_id"] == project_id
+    assert retried["job"]["status"] == "queued"
+    assert retried["job"]["attempt"] == 1
+    assert retried["job"]["error_code"] == "ASR_OPENAI_KEY_MISSING"
+    assert failed_event_ids < {event["id"] for event in retried["events"]}
+    assert any("已请求重新执行原任务" in event["message"] for event in retried["events"])
+
+    assert worker.run_once() is True
+    succeeded = client.get(f"/api/v1/jobs/{job_id}").json()
+    assert succeeded["job"]["status"] == "succeeded"
+    assert succeeded["job"]["attempt"] == 2
+    assert succeeded["job"]["error_code"] is None
+    assert succeeded["job"]["error_message"] is None
+    assert failed_event_ids < {event["id"] for event in succeeded["events"]}
+    assert any("ASR_OPENAI_KEY_MISSING" in event["message"] for event in succeeded["events"])
+    assert any(event["stage"] == "completed" for event in succeeded["events"])
+    assert client.post(f"/api/v1/jobs/{job_id}/retry").status_code == 409
+
+    with database.session() as session:
+        source = session.scalar(select(Source).where(Source.project_id == project_id))
+        assert source.id == original_source_id
+        assert source.storage_path == original_storage_path
+        assert source.sha256 == original_sha256
+        assert session.scalar(select(func.count()).select_from(Project)) == 1
 
 
 def test_ai_degrade_succeeds_and_is_traceable(runtime):
@@ -200,6 +285,7 @@ def test_subtitle_upload_is_real_async_input_and_cancel_is_persisted(runtime):
     assert canceled.status_code == 200
     assert canceled.json()["job"]["status"] == "canceled"
     assert worker.run_once() is False
+    assert client.post(f"/api/v1/jobs/{queued['job']['id']}/retry").status_code == 409
     persisted = client.get(f"/api/v1/projects/{queued['project']['id']}").json()
     assert persisted["project"]["status"] == "canceled"
 
@@ -208,10 +294,14 @@ def test_errors_and_health_use_stable_contract(runtime):
     client, worker, _database, _settings = runtime
     live = client.get("/api/v1/health/live")
     ready = client.get("/api/v1/health/ready")
-    assert live.status_code == ready.status_code == 200
-    assert ready.json()["checks"]["seed_assets"]["count"] >= 12
+    assert live.status_code == 200
+    assert ready.status_code == 503
+    assert ready.json()["code"] == "NOT_READY"
+    assert ready.json()["details"]["checks"]["seed_assets"]["count"] >= 12
     worker.heartbeat()
-    ready_after = client.get("/api/v1/health/ready").json()
+    ready_response = client.get("/api/v1/health/ready")
+    assert ready_response.status_code == 200
+    ready_after = ready_response.json()
     assert ready_after["checks"]["worker"]["online"] is True
 
     missing = client.get("/api/v1/projects/not-found")
@@ -233,10 +323,103 @@ def test_expired_running_lease_is_recovered_after_worker_restart(runtime):
         job.lease_expires_at = utcnow() - timedelta(seconds=10)
         job.progress = 46
         project.status = "processing"
+        session.add(
+            JobEvent(
+                job_id=job.id,
+                stage="matching",
+                progress=80,
+                message="崩溃前已经到达匹配阶段",
+            )
+        )
     assert worker.run_once() is True
     result = client.get(f"/api/v1/jobs/{created['job']['id']}").json()
     assert result["job"]["status"] == "succeeded"
     assert any("过期租约" in event["message"] for event in result["events"])
+    progresses = [event["progress"] for event in result["events"]]
+    assert progresses == sorted(progresses)
+
+
+def test_retry_rejects_permanent_failure_and_attempt_exhaustion(runtime):
+    client, _worker, database, _settings = runtime
+    running = create_project(client, title="正在执行", key="running-key")
+    with database.session() as session:
+        job = session.get(Job, running["job"]["id"])
+        job.status = "running"
+        job.attempt = 1
+        session.get(Project, job.project_id).status = "processing"
+    response = client.post(f"/api/v1/jobs/{running['job']['id']}/retry")
+    assert response.status_code == 409
+    assert response.json()["code"] == "INVALID_STATE"
+    with database.session() as session:
+        job = session.get(Job, running["job"]["id"])
+        assert job.status == "running"
+        assert job.attempt == 1
+
+    repaired_config = create_project(client, title="配置修复后再执行", key="rearm-config-key")
+    with database.session() as session:
+        job = session.get(Job, repaired_config["job"]["id"])
+        job.status = "failed"
+        job.retryable = False
+        job.error_code = "ASR_OPENAI_KEY_MISSING"
+        job.error_message = "API Key 尚未配置"
+        job.attempt = job.max_attempts
+        session.get(Project, job.project_id).status = "failed"
+        previous_max_attempts = job.max_attempts
+    repairable_detail = client.get(f"/api/v1/jobs/{repaired_config['job']['id']}").json()["job"]
+    assert repairable_detail["retryable"] is True
+    assert repairable_detail["max_attempts"] == previous_max_attempts + 1
+    response = client.post(f"/api/v1/jobs/{repaired_config['job']['id']}/retry")
+    assert response.status_code == 202
+    assert response.json()["job"]["status"] == "queued"
+    assert response.json()["job"]["max_attempts"] == previous_max_attempts + 1
+
+    permanent = create_project(client, title="不可重试", key="permanent-key")
+    with database.session() as session:
+        job = session.get(Job, permanent["job"]["id"])
+        job.status = "failed"
+        job.retryable = False
+        job.error_code = "PERMANENT"
+        session.get(Project, job.project_id).status = "failed"
+    response = client.post(f"/api/v1/jobs/{permanent['job']['id']}/retry")
+    assert response.status_code == 409
+    assert response.json()["code"] == "JOB_NOT_RETRYABLE"
+
+    exhausted = create_project(client, title="次数耗尽", key="exhausted-key")
+    with database.session() as session:
+        job = session.get(Job, exhausted["job"]["id"])
+        job.status = "failed"
+        job.retryable = True
+        job.attempt = job.max_attempts
+        session.get(Project, job.project_id).status = "failed"
+    response = client.post(f"/api/v1/jobs/{exhausted['job']['id']}/retry")
+    assert response.status_code == 409
+    assert response.json()["code"] == "JOB_ATTEMPTS_EXHAUSTED"
+    with database.session() as session:
+        job = session.get(Job, exhausted["job"]["id"])
+        assert job.max_attempts == 3
+
+
+def test_stale_worker_cannot_fail_a_recovered_lease(runtime):
+    client, stale_worker, database, settings = runtime
+    created = create_project(client, title="租约 fencing", key="fencing-key")
+    job_id = created["job"]["id"]
+    assert stale_worker.claim() == job_id
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        job.lease_expires_at = utcnow() - timedelta(seconds=1)
+    recovered_worker = DurableWorker(database, settings, worker_id="recovered-worker")
+    assert recovered_worker.claim() == job_id
+
+    stale_generation = stale_worker._claimed_generations[job_id]
+    stale_worker._fail(
+        job_id, stale_generation, WorkerFailure("STALE_FAILURE", "stale worker", True)
+    )
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "running"
+        assert job.lease_owner == "recovered-worker"
+        assert job.error_code is None
 
 
 def test_asset_upload_patch_dashboard_and_project_delete(runtime):

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import types
 
+import httpx
 import pytest
 
 from app import asr
@@ -62,10 +65,11 @@ def test_real_local_asr_provider_is_lazy_and_mockable(tmp_path, monkeypatch):
         text = " 本地识别成功 "
 
     class FakeModel:
-        def __init__(self, model, device, compute_type):
+        def __init__(self, model, device, compute_type, download_root):
             assert model == "tiny"
             assert device == "cpu"
             assert compute_type == "int8"
+            assert download_root == str(tmp_path / "models" / "whisper")
 
         def transcribe(self, path, **kwargs):
             assert kwargs["language"] == "zh"
@@ -97,5 +101,99 @@ def test_invalid_asr_provider_is_structured(tmp_path):
     with pytest.raises(TranscriptionError) as caught:
         transcribe_file(media, "audio/wav", settings)
     assert caught.value.code == "ASR_PROVIDER_INVALID"
-    assert caught.value.retryable is False
+    assert caught.value.retryable is True
+    assert caught.value.category == "configuration"
 
+
+@pytest.mark.parametrize(
+    ("status", "payload", "code", "category", "retryable"),
+    [
+        (401, {"error": {"message": "invalid api key"}}, "ASR_PROVIDER_AUTH_ERROR", "configuration", True),
+        (400, {"error": {"message": "model does not exist"}}, "ASR_PROVIDER_CONFIGURATION_ERROR", "configuration", True),
+        (422, {"error": {"message": "invalid audio file"}}, "ASR_INPUT_REJECTED", "input", False),
+        (429, {"error": {"message": "rate limit"}}, "ASR_PROVIDER_RATE_LIMITED", "transient", True),
+        (503, {"error": {"message": "unavailable"}}, "ASR_PROVIDER_UNAVAILABLE", "transient", True),
+    ],
+)
+def test_provider_errors_have_actionable_classification(
+    status, payload, code, category, retryable
+):
+    request = httpx.Request("POST", "https://asr.example.test/audio/transcriptions")
+    failure = asr._provider_http_error(httpx.Response(status, request=request, json=payload))
+    assert failure.code == code
+    assert failure.category == category
+    assert failure.retryable is retryable
+
+
+def test_local_asr_timeout_is_configurable(tmp_path, monkeypatch):
+    class FakeModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _path, **_kwargs):
+            time.sleep(0.2)
+            return [], object()
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    asr._LOCAL_MODELS.clear()
+    media = tmp_path / "slow.wav"
+    media.write_bytes(b"RIFF")
+    settings = Settings(
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{(tmp_path / 'db.sqlite').as_posix()}",
+        asr_provider="local",
+        local_asr_timeout=0.05,
+    )
+    with pytest.raises(TranscriptionError) as caught:
+        transcribe_file(media, "audio/wav", settings)
+    assert caught.value.code == "ASR_LOCAL_TIMEOUT"
+    assert caught.value.retryable is True
+
+
+def test_local_asr_timeout_prevents_overlapping_retry(tmp_path, monkeypatch):
+    release = threading.Event()
+
+    class FakeModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _path, **_kwargs):
+            release.wait(2)
+            return [], object()
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    asr._LOCAL_MODELS.clear()
+    media = tmp_path / "busy.wav"
+    media.write_bytes(b"RIFF")
+    settings = Settings(
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{(tmp_path / 'db.sqlite').as_posix()}",
+        asr_provider="local",
+        local_asr_timeout=0.05,
+    )
+    try:
+        with pytest.raises(TranscriptionError) as timed_out:
+            transcribe_file(media, "audio/wav", settings)
+        assert timed_out.value.code == "ASR_LOCAL_TIMEOUT"
+        with pytest.raises(TranscriptionError) as busy:
+            transcribe_file(media, "audio/wav", settings)
+        assert busy.value.code == "ASR_LOCAL_BUSY"
+        assert busy.value.category == "transient"
+    finally:
+        release.set()
+
+
+def test_invalid_provider_url_is_configuration_error(tmp_path):
+    media = tmp_path / "speech.wav"
+    media.write_bytes(b"RIFF")
+    settings = Settings(
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{(tmp_path / 'db.sqlite').as_posix()}",
+        asr_provider="openai",
+        openai_api_key="test-key",
+        openai_base_url="not-a-url",
+    )
+    with pytest.raises(TranscriptionError) as caught:
+        transcribe_file(media, "audio/wav", settings)
+    assert caught.value.code == "ASR_PROVIDER_CONFIGURATION_ERROR"
+    assert caught.value.category == "configuration"

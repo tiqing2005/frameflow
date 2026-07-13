@@ -60,6 +60,10 @@ jobs:
         env:
           VITE_API_BASE_URL: /api/v1
         run: npm run build
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:browser
 
   contract-smoke:
     name: API + durable worker contract smoke
