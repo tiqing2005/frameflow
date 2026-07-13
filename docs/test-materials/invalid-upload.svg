@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <rect width="320" height="180" fill="#e5484d"/>
+  <text x="160" y="82" text-anchor="middle" font-family="Arial" font-size="22" fill="#fff">INVALID USER SVG</text>
+  <text x="160" y="112" text-anchor="middle" font-family="Arial" font-size="14" fill="#fff">Expected: rejected by upload validation</text>
+</svg>

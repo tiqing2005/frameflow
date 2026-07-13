@@ -61,8 +61,15 @@ def test_character_ngram_tfidf_and_hybrid_formula_are_transparent():
 
 
 def test_real_local_asr_provider_is_lazy_and_mockable(tmp_path, monkeypatch):
+    class FakeOpenCC:
+        def __init__(self, config):
+            assert config == "t2s"
+
+        def convert(self, text):
+            return text.replace("識別", "识别")
+
     class FakeSegment:
-        text = " 本地识别成功 "
+        text = " 本地識別成功 "
 
     class FakeModel:
         def __init__(self, model, device, compute_type, download_root):
@@ -73,10 +80,12 @@ def test_real_local_asr_provider_is_lazy_and_mockable(tmp_path, monkeypatch):
 
         def transcribe(self, path, **kwargs):
             assert kwargs["language"] == "zh"
+            assert "简体中文" in kwargs["initial_prompt"]
             assert kwargs["vad_filter"] is True
             return iter([FakeSegment()]), object()
 
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    monkeypatch.setitem(sys.modules, "opencc", types.SimpleNamespace(OpenCC=FakeOpenCC))
     asr._LOCAL_MODELS.clear()
     media = tmp_path / "speech.mp4"
     media.write_bytes(b"fake-media-for-mocked-decoder")
@@ -135,6 +144,7 @@ def test_local_asr_timeout_is_configurable(tmp_path, monkeypatch):
             return [], object()
 
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    monkeypatch.setitem(sys.modules, "opencc", types.SimpleNamespace(OpenCC=lambda _config: None))
     asr._LOCAL_MODELS.clear()
     media = tmp_path / "slow.wav"
     media.write_bytes(b"RIFF")
@@ -162,6 +172,7 @@ def test_local_asr_timeout_prevents_overlapping_retry(tmp_path, monkeypatch):
             return [], object()
 
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    monkeypatch.setitem(sys.modules, "opencc", types.SimpleNamespace(OpenCC=lambda _config: None))
     asr._LOCAL_MODELS.clear()
     media = tmp_path / "busy.wav"
     media.write_bytes(b"RIFF")

@@ -84,48 +84,110 @@ def metrics(rankings: list[tuple[str, list[str]]], k: int = 3) -> dict[str, floa
     }
 
 
+def negative_precision(
+    cases: list[dict], rankings: list[list[str]], k: int = 3
+) -> float:
+    """Fraction of cases whose top-k contains none of the hard negatives."""
+    clean = 0
+    total = 0
+    for case, ranking in zip(cases, rankings):
+        negatives = case.get("negatives") or []
+        if not negatives:
+            continue
+        total += 1
+        top_k = set(ranking[:k])
+        if not (top_k & set(negatives)):
+            clean += 1
+    return clean / max(1, total)
+
+
+def _strategy_rows(
+    name: str, strategy, cases: list[dict], assets: list[dict], k: int = 3
+) -> tuple[dict[str, float], list[str], float, float]:
+    """Return (overall metrics, top-3 misses, hard Hit@k, negative precision)."""
+    all_rankings = [strategy(case["text"], assets) for case in cases]
+    pairs = [(case["expected"], ranking) for case, ranking in zip(cases, all_rankings)]
+    overall = metrics(pairs, k)
+    misses = [
+        case["id"]
+        for case, ranking in zip(cases, all_rankings)
+        if case["expected"] not in ranking[:k]
+    ]
+    hard_cases = [c for c in cases if c.get("difficulty") == "hard"]
+    hard_pairs = [
+        (c["expected"], strategy(c["text"], assets)) for c in hard_cases
+    ] if hard_cases else pairs
+    hard_metrics = metrics(hard_pairs, k)
+    neg_prec = negative_precision(cases, all_rankings, k)
+    return overall, misses, hard_metrics[f"Hit@{k}"], neg_prec
+
+
 def main() -> None:
     cases = json.loads((Path(__file__).parent / "cases.json").read_text(encoding="utf-8"))
     assets = asset_rows()
+    easy = [c for c in cases if c.get("difficulty", "easy") == "easy"]
+    hard = [c for c in cases if c.get("difficulty") == "hard"]
     strategies = {
         "关键词基线": keyword_ranking,
         "字符 TF-IDF": tfidf_ranking,
-        "混合排序": hybrid_ranking,
+        "混合排序(字符)": hybrid_ranking,
     }
-    report: dict[str, dict[str, float]] = {}
-    failures: dict[str, list[str]] = {}
-    for name, strategy in strategies.items():
-        results = [(case["expected"], strategy(case["text"], assets)) for case in cases]
-        report[name] = metrics(results)
-        failures[name] = [
-            case["id"]
-            for case, (_expected, ranking) in zip(cases, results)
-            if case["expected"] not in ranking[:3]
-        ]
+    # If an embedding scorer is available, also report a hybrid+embedding row.
+    embedding_scorer = None
+    try:
+        from app.config import Settings  # noqa: E402
+        from app.embeddings import get_semantic_scorer  # noqa: E402
+
+        embedding_scorer = get_semantic_scorer(Settings.from_env())
+    except Exception:
+        embedding_scorer = None
+    if embedding_scorer is not None:
+
+        def hybrid_embedding_ranking(text: str, assets: list[dict]) -> list[str]:
+            keywords = extract_keywords(text, top_k=6)
+            topic = infer_topic(text, keywords)
+            return [
+                item.asset_id
+                for item in rank_assets(
+                    text, topic, keywords, assets, minimum=3, semantic_scorer=embedding_scorer
+                )
+            ]
+
+        strategies["混合排序(向量)"] = hybrid_embedding_ranking
+
+    rows = {
+        name: _strategy_rows(name, strategy, cases, assets)
+        for name, strategy in strategies.items()
+    }
 
     lines = [
         "# 检索策略离线评测",
         "",
-        f"固定评测集：{len(cases)} 条未作为应用演示样例写入的中文字幕；相关项为对应主题素材。",
+        f"评测集：{len(cases)} 条中文字幕（{len(easy)} 条 easy + {len(hard)} 条 hard）。"
+        "easy 与演示样例同源；hard 含同义改写、比喻和跨主题干扰项（negatives），"
+        "用于区分纯字面匹配与语义匹配。",
         "",
-        "| 策略 | Hit@3 | MRR | nDCG@3 | Top 3 未命中 |",
-        "| --- | ---: | ---: | ---: | --- |",
+        f"语义通道：{'向量（' + embedding_scorer.name + '）' if embedding_scorer else '字符 n-gram（未启用 embedding provider）'}。",
+        "",
+        "| 策略 | Hit@3 | MRR | nDCG@3 | Hard Hit@3 | 负面精度 | Top 3 未命中 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
-    for name, values in report.items():
-        missing = "、".join(failures[name]) or "无"
+    for name, (values, misses, hard_hit, neg_prec) in rows.items():
+        missing = "、".join(misses) or "无"
         lines.append(
             f"| {name} | {values['Hit@3']:.3f} | {values['MRR']:.3f} | "
-            f"{values['nDCG@3']:.3f} | {missing} |"
+            f"{values['nDCG@3']:.3f} | {hard_hit:.3f} | {neg_prec:.3f} | {missing} |"
         )
     lines += [
         "",
-        "> 这是一组小规模、可复现的工程决策证据，不代表线上泛化指标。混合排序仍保留三项分数与命中词，便于人工判断。",
+        "> 这是一组小规模、可复现的工程决策证据，不代表线上泛化指标。Hard case 的价值在于让三个策略产生区分度：字面匹配在同义/比喻上明显下滑，混合排序保留三项分数与命中词，便于人工判断。启用 embedding provider（本地 BGE 或远程 /embeddings）后，'混合排序(向量)' 行会自动出现。",
         "",
         "运行：`python evaluation/evaluate.py`。脚本会覆盖本文件。",
         "",
     ]
     output = Path(__file__).parent / "RESULTS.md"
     output.write_text("\n".join(lines), encoding="utf-8")
+    report = {name: rows[name][0] for name in rows}
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

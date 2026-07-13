@@ -1,0 +1,5 @@
+file,name,tags,keywords,expected_search
+../../backend/seed_media/city.jpg,城市通勤测试图,"城市,交通,通勤","自行车,街道,城市生活,早晨",城市
+../../backend/seed_media/video-focus-work.mp4,专注办公测试视频,"办公,效率,工作","电脑,专注,生产力,任务",办公
+../../backend/seed_media/nature.jpg,绿色自然测试图,"自然,环保,健康","森林,绿色,公园,散步",自然
+../../backend/seed_media/video-team-collab.mp4,团队协作测试视频,"团队,协作,项目","会议,沟通,进度,数据",团队

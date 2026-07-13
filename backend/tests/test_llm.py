@@ -140,3 +140,51 @@ def test_timeout_degrades_without_exposing_api_key(tmp_path):
     assert "超时" in result.error_message
     assert "test-secret-key" not in result.error_message
     assert "".join(item["text"] for item in result.segments) == TEXT
+
+
+def test_suggest_asset_tags_returns_empty_when_rules(tmp_path):
+    from app.llm import suggest_asset_tags
+
+    s = settings(tmp_path, llm_provider="rules")
+    assert suggest_asset_tags("城市夜景", "", s) == ([], [])
+
+
+def test_suggest_asset_tags_returns_tags_on_success(tmp_path, monkeypatch):
+    from app import llm as llm_mod
+    from app.llm import suggest_asset_tags
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps({"tags": ["城市", "夜景"], "keywords": ["航拍", "灯光"]})}}
+                ]
+            }
+
+    captured = {}
+
+    def fake_post(endpoint, headers=None, json=None, timeout=None):
+        captured["endpoint"] = endpoint
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    tags, keywords = suggest_asset_tags("城市夜景", "", settings(tmp_path))
+    assert tags == ["城市", "夜景"]
+    assert keywords == ["航拍", "灯光"]
+    assert "Bearer test-secret-key" == captured["headers"]["Authorization"]
+
+
+def test_suggest_asset_tags_returns_empty_on_failure(tmp_path, monkeypatch):
+    from app import llm as llm_mod
+    from app.llm import suggest_asset_tags
+
+    def fake_post(endpoint, headers=None, json=None, timeout=None):
+        raise httpx.ConnectError("provider down")
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    tags, keywords = suggest_asset_tags("城市夜景", "", settings(tmp_path))
+    assert tags == [] and keywords == []

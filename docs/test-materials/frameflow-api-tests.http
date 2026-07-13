@@ -1,0 +1,51 @@
+@baseUrl = http://127.0.0.1:8000
+@api = {{baseUrl}}/api/v1
+@idempotencyKey = contract-idem-001
+
+### 1. API 存活
+GET {{baseUrl}}/health/live
+
+### 2. 数据库、Worker 与素材就绪
+GET {{baseUrl}}/health/ready
+
+### 3. 项目台聚合
+GET {{api}}/dashboard
+
+### 4. 素材列表
+GET {{api}}/assets
+
+### 5A. 首次幂等创建：预期 202
+POST {{api}}/projects/text
+Content-Type: application/json
+Idempotency-Key: {{idempotencyKey}}
+
+{
+  "title": "幂等测试 A",
+  "text": "相同内容用于验证相同幂等键和相同请求只创建一个项目。"
+}
+
+### 5B. 完全相同请求重放：预期返回与 5A 相同的 Project/Job
+POST {{api}}/projects/text
+Content-Type: application/json
+Idempotency-Key: {{idempotencyKey}}
+
+{
+  "title": "幂等测试 A",
+  "text": "相同内容用于验证相同幂等键和相同请求只创建一个项目。"
+}
+
+### 5C. 相同 Key、不同正文：预期 409
+POST {{api}}/projects/text
+Content-Type: application/json
+Idempotency-Key: {{idempotencyKey}}
+
+{
+  "title": "幂等测试 A",
+  "text": "不同内容用于验证相同幂等键不能错误复用，应返回 409。"
+}
+
+### 6. 运行记录
+GET {{api}}/runs
+
+### 7. 审计记录
+GET {{api}}/audit

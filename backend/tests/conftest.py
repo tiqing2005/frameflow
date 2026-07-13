@@ -19,6 +19,7 @@ def runtime(tmp_path: Path):
         stage_delay_seconds=0,
         worker_poll_seconds=0.01,
         job_lease_seconds=30,
+        demo_mode=True,
         frontend_dir=tmp_path / "no-frontend",
     )
     app = create_app(settings)
@@ -26,4 +27,3 @@ def runtime(tmp_path: Path):
         worker = DurableWorker(app.state.database, settings, worker_id="pytest-worker")
         yield client, worker, app.state.database, settings
     app.state.database.engine.dispose()
-

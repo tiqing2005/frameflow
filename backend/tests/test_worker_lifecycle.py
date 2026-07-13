@@ -104,6 +104,24 @@ def test_execution_generation_change_fences_late_result(runtime, monkeypatch):
         assert session.scalar(select(Source.transcript_text).where(Source.project_id == job.project_id)) is None
 
 
+def test_timed_out_pipeline_blocks_new_claim_until_it_unwinds(runtime, monkeypatch):
+    client, worker, _database, settings = runtime
+    settings.job_max_execution_seconds = 0.15
+    started, release = install_slow_asr(monkeypatch)
+    first = create_audio_job(client, "bounded-timeout-first")
+    runner = threading.Thread(target=worker.run_once)
+    runner.start()
+    assert started.wait(2)
+    runner.join(2)
+    assert not runner.is_alive()
+    assert client.get(f"/api/v1/jobs/{first['job']['id']}").json()["job"]["error_code"] == "JOB_TIMEOUT"
+    second = create_audio_job(client, "bounded-timeout-second")
+    assert worker.claim() is None
+    release.set()
+    wait_until(lambda: not next(iter(worker._timed_out_pipelines)).is_alive())
+    assert worker.claim() == second["job"]["id"]
+
+
 def test_job_timeout_fences_late_asr_result(runtime, monkeypatch):
     client, worker, database, settings = runtime
     settings.job_lease_seconds = 0.6

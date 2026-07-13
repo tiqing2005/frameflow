@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -25,6 +27,29 @@ def create_project(client, title="全流程验收", text=SAMPLE_TEXT, key="flow-
     )
     assert response.status_code == 202, response.text
     return response.json()
+
+
+def test_concurrent_idempotent_project_create_returns_one_resource(runtime):
+    client, _worker, database, _settings = runtime
+
+    def create_once():
+        return client.post(
+            "/api/v1/projects/text",
+            json={"title": "并发幂等", "text": SAMPLE_TEXT},
+            headers={"Idempotency-Key": "concurrent-idempotency-key"},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _index: create_once(), range(2)))
+
+    assert [response.status_code for response in responses] == [202, 202]
+    payloads = [response.json() for response in responses]
+    assert payloads[0]["project"]["id"] == payloads[1]["project"]["id"]
+    assert payloads[0]["job"]["id"] == payloads[1]["job"]["id"]
+    assert sorted(payload["idempotent_replay"] for payload in payloads) == [False, True]
+    with database.session() as session:
+        assert session.scalar(select(func.count()).select_from(Project)) == 1
+        assert session.scalar(select(func.count()).select_from(Job)) == 1
 
 
 def test_create_job_result_edit_select_reorder_and_refresh(runtime):
@@ -360,8 +385,8 @@ def test_retry_rejects_permanent_failure_and_attempt_exhaustion(runtime):
         job = session.get(Job, repaired_config["job"]["id"])
         job.status = "failed"
         job.retryable = False
-        job.error_code = "ASR_OPENAI_KEY_MISSING"
-        job.error_message = "API Key 尚未配置"
+        job.error_code = "ASR_MODEL_DOWNLOAD_NETWORK_ERROR"
+        job.error_message = "Whisper 模型下载失败"
         job.attempt = job.max_attempts
         session.get(Project, job.project_id).status = "failed"
         previous_max_attempts = job.max_attempts
@@ -439,6 +464,23 @@ def test_asset_upload_patch_dashboard_and_project_delete(runtime):
     assert media.status_code == 200
     assert media.content.startswith(b"\x89PNG")
 
+    auto_tagged = client.post(
+        "/api/v1/assets",
+        data={"name": "城市通勤自动标签素材", "tags": "", "keywords": ""},
+        files={"file": ("auto-tags.png", png, "image/png")},
+    )
+    assert auto_tagged.status_code == 201, auto_tagged.text
+    assert auto_tagged.json()["tags"]
+    assert auto_tagged.json()["keywords"]
+    tagging_run = next(
+        item
+        for item in client.get("/api/v1/runs").json()["items"]
+        if item["operation"] == "asset_tagging"
+    )
+    assert tagging_run["prompt_version"] == "asset-tags-v1"
+    assert tagging_run["input_hash"]
+    assert tagging_run["provider"] == "rules"
+
     patched = client.patch(
         f"/api/v1/assets/{asset_id}",
         json={"name": "产品效率界面", "tags": ["产品", "效率"], "keywords": ["工作台"]},
@@ -465,3 +507,87 @@ def test_asset_upload_patch_dashboard_and_project_delete(runtime):
     assert client.get(f"/api/v1/projects/{created['project']['id']}").status_code == 404
     recreated = create_project(client, title="幂等记录已随项目清理", key="delete-key")
     assert recreated["project"]["id"] != created["project"]["id"]
+
+
+def test_pipeline_records_semantic_and_matching_runs_separately(runtime):
+    client, worker, _database, _settings = runtime
+    created = create_project(client, title="AI 匹配追踪", key="trace-runs")
+    assert worker.run_once() is True
+    runs = client.get("/api/v1/runs").json()["items"]
+    semantic = next(item for item in runs if item["operation"] == "semantic_segmentation")
+    matching = next(item for item in runs if item["operation"] == "asset_matching")
+    assert semantic["job_id"] == created["job"]["id"]
+    assert semantic["prompt_version"] == "semantic-segments-v1"
+    assert matching["job_id"] == created["job"]["id"]
+    assert matching["prompt_version"] == "hybrid-ranker-v2"
+    assert matching["input_hash"]
+    assert matching["output_summary"]["traces"]
+
+
+def test_matching_run_records_actual_embedding_provider(runtime):
+    client, worker, _database, _settings = runtime
+
+    class FakeEmbedding:
+        name = "fake-embedding"
+        provider = "test-vector-provider"
+        model = "test-vector-model"
+
+        def cosine_scores(self, _query, documents):
+            return [0.5 for _ in documents]
+
+    worker._semantic_scorer = FakeEmbedding()
+    created = create_project(client, title="向量追踪", key="vector-trace-provider")
+    assert worker.run_once() is True
+    matching = next(
+        item
+        for item in client.get("/api/v1/runs").json()["items"]
+        if item["operation"] == "asset_matching" and item["job_id"] == created["job"]["id"]
+    )
+    assert matching["provider"] == "test-vector-provider"
+    assert matching["model"] == "test-vector-model"
+    assert all(
+        trace["provider"] == "test-vector-provider"
+        for trace in matching["output_summary"]["traces"]
+    )
+
+
+def test_expired_running_lease_stops_after_max_attempts(runtime):
+    client, worker, database, _settings = runtime
+    created = create_project(client, title="恢复次数耗尽", key="exhausted-lease")
+    with database.session() as session:
+        job = session.get(Job, created["job"]["id"])
+        job.status = "running"
+        job.attempt = job.max_attempts
+        job.lease_owner = "crashed-worker"
+        job.lease_expires_at = utcnow() - timedelta(seconds=10)
+        session.get(Project, job.project_id).status = "processing"
+    assert worker.claim() is None
+    with database.session() as session:
+        job = session.get(Job, created["job"]["id"])
+        assert job.status == "failed"
+        assert job.retryable is False
+        assert job.error_code == "JOB_ATTEMPTS_EXHAUSTED"
+        assert job.lease_owner is None
+
+
+def test_subtitle_limit_and_private_source_storage(runtime):
+    client, _worker, database, settings = runtime
+    settings.max_subtitle_chars = 20
+    rejected = client.post(
+        "/api/v1/projects/upload",
+        data={"title": "超长字幕"},
+        files={"file": ("long.srt", ("1\n00:00:00,000 --> 00:00:01,000\n" + "字" * 21).encode(), "text/plain")},
+    )
+    assert rejected.status_code == 413
+    assert rejected.json()["code"] == "SUBTITLE_TOO_LONG"
+    settings.max_subtitle_chars = 200_000
+    accepted = client.post(
+        "/api/v1/projects/upload",
+        data={"title": "私有字幕"},
+        files={"file": ("private.srt", b"1\n00:00:00,000 --> 00:00:01,000\nhello", "text/plain")},
+    )
+    assert accepted.status_code == 202
+    with database.session() as session:
+        source = session.scalar(select(Source).where(Source.project_id == accepted.json()["project"]["id"]))
+        assert source.public_url is None
+        assert Path(source.storage_path).parent == settings.data_dir / "private" / "sources"

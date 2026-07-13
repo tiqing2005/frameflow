@@ -1,0 +1,20 @@
+{
+  "idempotency_key": "contract-idem-001",
+  "request_a": {
+    "title": "幂等测试 A",
+    "text": "相同内容用于验证相同幂等键和相同请求只创建一个项目。"
+  },
+  "request_b": {
+    "title": "幂等测试 A",
+    "text": "相同内容用于验证相同幂等键和相同请求只创建一个项目。"
+  },
+  "request_c": {
+    "title": "幂等测试 A",
+    "text": "不同内容用于验证相同幂等键不能错误复用，应返回 409。"
+  },
+  "expected": {
+    "a": "HTTP 202，返回 project.id 与 job.id",
+    "b": "返回与 A 相同的 project.id 与 job.id，不创建第二行",
+    "c": "HTTP 409，统一错误结构，不创建新资源"
+  }
+}
