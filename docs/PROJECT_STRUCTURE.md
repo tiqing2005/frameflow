@@ -51,33 +51,56 @@ frameflow/
 ```text
 backend/app/
 ├─ __init__.py
-├─ main.py          # 应用工厂/生命周期、CORS、路由注册、静态 SPA 托管
+├─ main.py          # 应用工厂/生命周期、CORS、错误处理、路由装配、静态 SPA 托管（纯装配）
 ├─ config.py        # Settings；仅从环境变量建立运行配置
 ├─ db.py            # Engine/Session、SQLite PRAGMA、初始化与 seed
 ├─ models.py        # SQLAlchemy 2 持久化模型和约束
 ├─ schemas.py       # Pydantic 请求校验模型
 ├─ errors.py        # 领域错误、统一 HTTP 错误包装和 request_id
+├─ middleware.py    # 单机演示读写分桶限流、标准 429 与 Retry-After
 ├─ nlp.py           # 规则分段、关键词、n-gram TF-IDF 混合排序
+├─ embeddings.py    # 语义相似度 Provider 边界（本地 BGE / 远程 / 字符回退）
+├─ llm.py           # 可选 LLM 语义分段增强；失败回退确定性规则
 ├─ asr.py           # ASR Provider 边界；未配置时返回真实错误
+├─ preview.py       # ffmpeg 组合预览渲染、编码器探测、字幕与媒体规范化
 ├─ seed.py          # 幂等创建至少 12 个本地授权安全素材
-├─ services.py      # 项目、素材、编辑、选择、审计等用例（可按规模分文件）
-├─ pipeline.py      # 任务阶段编排和事务化结果换版
-├─ worker.py        # 原子领取、租约/心跳、执行、恢复和优雅停机
-└─ api.py/routes/   # /api/v1 路由（可在 main.py 中集中，也可按资源分组）
+├─ worker.py        # 原子领取、租约/心跳、流水线执行、恢复和优雅停机
+│                   # （任务阶段编排 worker._process_pipeline + 事务化结果换版 _persist）
+├─ routers/         # /api/v1 路由按资源分组
+│   ├─ _deps.py     # get_session / get_settings 依赖
+│   ├─ health.py    # /health/live、/health/ready（同时挂 api 与根路径）
+│   ├─ projects.py  # /projects、/projects/text、/projects/upload、/dashboard
+│   ├─ jobs.py      # /jobs/*
+│   ├─ segments.py  # /segments/*、/projects/{id}/segments*
+│   ├─ assets.py    # /assets/*
+│   ├─ runs.py      # /runs
+│   ├─ audit.py     # /audit
+│   ├─ previews.py  # /projects/{id}/timeline 与 /preview
+│   └─ demo.py      # /demo/faults/next
+└─ services/        # 用例服务层按用例分组（__init__ 重新导出全部公共符号）
+    ├─ common.py    # dumps、stable_hash、_get_*、add_audit
+    ├─ projects.py  # 创建/列表/详情/删除/仪表盘
+    ├─ segments.py  # 片段详情、重匹配、编辑、重排
+    ├─ selections.py# 人工选择
+    ├─ assets.py    # 素材列表/上传/编辑
+    ├─ jobs.py      # 任务详情/重试/取消/演示故障
+    ├─ previews.py  # 时间线计划、指纹幂等与预览 Job 创建/查询
+    ├─ runs.py      # AI 运行记录
+    └─ audit.py     # 审计事件
 ```
 
 ### 3.1 依赖方向
 
 ```text
-HTTP routes
+HTTP routes (routers/)
     ↓
-request schemas + domain services
+request schemas + domain services (services/)
     ↓
 models / db / nlp / provider boundaries
 
 worker
     ↓
-pipeline + same domain services
+_process_pipeline + _persist + same domain services (services/)
     ↓
 models / db / nlp / provider boundaries
 ```
@@ -116,7 +139,7 @@ frontend/src/
 │  ├─ DashboardPage.tsx       # 项目台
 │  ├─ NewProjectPage.tsx      # 文本/文件新建
 │  ├─ ProcessingPage.tsx      # 持久化任务进度、失败与重试
-│  ├─ WorkbenchPage.tsx       # 字幕编辑、推荐、搜索替换
+│  ├─ WorkbenchPage.tsx       # 字幕编辑/排序、快速替换、时间线与预览播放
 │  ├─ AssetsPage.tsx          # 素材库与上传
 │  ├─ RunsPage.tsx            # AI/匹配运行记录
 │  └─ DemoLabPage.tsx         # 一次性故障注入
@@ -149,16 +172,19 @@ npm run build
 ```text
 /data/
 ├─ frameflow.db
+├─ private/
+│  └─ sources/                  # 项目原始音频/视频，仅 Worker 读取，不公开挂载
 └─ media/
    ├─ seed/                     # 幂等种子素材
+   ├─ previews/                 # 可公开播放的组合预览 MP4
    └─ uploads/
-      ├─ sources/              # 项目音频/视频
-      └─ assets/               # 用户素材
+      └─ assets/                # 用户素材
 ```
 
 - 数据库和媒体目录必须一起备份和恢复。
 - 不将用户原文件名用作磁盘路径。
 - seed 可重复执行，不重复插入资源。
+- 原始项目源文件不生成公开 URL；只有素材与成功预览位于公开 `/media` 路径。
 
 ## 6. 测试结构
 

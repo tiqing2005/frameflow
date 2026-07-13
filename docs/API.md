@@ -39,6 +39,7 @@
 {
   "id": "job-id",
   "project_id": "project-id",
+  "kind": "pipeline",
   "status": "running",
   "stage": "matching",
   "progress": 72,
@@ -55,7 +56,9 @@
 
 `status`: `queued | running | succeeded | failed | canceled`。
 
-`stage`: `validating | extracting | transcribing | segmenting | keywording | matching | persisting | completed`。
+`kind`: `pipeline | preview`。主处理任务与预览渲染任务共用同一套持久化、租约、重试和事件契约。
+
+主任务 `stage`: `validating | extracting | transcribing | segmenting | keywording | matching | persisting | completed`；预览任务使用 `preview_planning | preview_rendering | completed`。
 
 ### 2.3 JobEvent
 
@@ -140,6 +143,48 @@
 
 当前 Demo 的列表体量小，未承诺稳定的分页游标契约。
 
+### 2.7 Timeline / PreviewRender
+
+```json
+{
+  "project_id": "project-id",
+  "input_hash": "sha256...",
+  "segment_count": 2,
+  "duration_ms": 6000,
+  "items": [
+    {
+      "segment_id": "segment-id",
+      "position": 0,
+      "text": "智能城市让公共服务更高效。",
+      "topic": "智能城市",
+      "start_ms": 0,
+      "end_ms": 3000,
+      "duration_ms": 3000,
+      "asset": {}
+    }
+  ]
+}
+```
+
+时间线只返回公开素材字段，不返回磁盘 `storage_path`。文本项目按字幕长度计算确定性片段时长；具有有效时间戳的字幕优先使用时间戳并限制在安全范围内。
+
+```json
+{
+  "id": "preview-id",
+  "project_id": "project-id",
+  "job_id": "job-id",
+  "input_hash": "sha256...",
+  "status": "queued",
+  "output_url": null,
+  "duration_ms": 6000,
+  "segment_count": 2,
+  "error_message": null,
+  "job": {},
+  "created_at": "2026-07-14T08:30:00Z",
+  "updated_at": "2026-07-14T08:30:00Z"
+}
+```
+
 ## 3. 错误契约
 
 ```json
@@ -162,10 +207,13 @@
 | 409 | `SEGMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 版本、幂等请求或状态迁移冲突 |
 | 413 | `UPLOAD_TOO_LARGE` | 超过服务端上传限制 |
 | 422 | `VALIDATION_ERROR` | Pydantic 字段校验失败，仍尽量包装为统一格式 |
+| 429 | `RATE_LIMITED` | 超过当前客户端的读/写请求速率限制 |
 | 500 | `INTERNAL_ERROR` | 未预期服务端错误，不返回堆栈 |
 | 503 | `NOT_READY`, `ASR_NOT_CONFIGURED`, `AI_PROVIDER_UNAVAILABLE` | 依赖未就绪或短暂不可用 |
 
 `retryable` 表示服务端对当前错误的建议，不代表客户端应无限自动重试。对有副作用的请求，前端必须结合幂等键或人工确认。
+
+429 响应同时带 `Retry-After` 与 `X-Request-ID`。单机演示默认读请求 240/min、写请求 60/min；健康检查不计入限流。
 
 ## 4. 健康检查
 
@@ -389,10 +437,10 @@ Body：
 | --- | --- | --- |
 | `file` | 是 | 受支持图片或短视频 |
 | `name` | 是 | 1～160 字符 |
-| `tags` | 是 | 逗号分隔字符串，服务端清理为数组 |
-| `keywords` | 是 | 逗号分隔字符串 |
+| `tags` | 否 | 逗号分隔字符串，服务端清理为数组 |
+| `keywords` | 否 | 逗号分隔字符串 |
 
-成功返回 HTTP 201 或 200 的 Asset。上传文件使用服务端随机文件名。
+成功返回 HTTP 201 的 Asset。上传文件使用服务端随机文件名。标签或关键词为空时，服务端会尝试 LLM 自动建议；未配置、超时或输出不合格时回退到确定性关键词提取，并记录 `asset_tagging` AIRun 的实际 provider/model/degraded 状态。
 
 ### PATCH `/api/v1/assets/{asset_id}`
 
@@ -407,7 +455,53 @@ Body：
 
 至少提供一个字段。禁用已被 Selection 引用的素材时，服务端应拒绝或显式要求替换，不能制造悬空选择。
 
-## 9. 运行与审计
+## 9. 时间线与组合预览
+
+### GET `/api/v1/projects/{project_id}/timeline`
+
+返回当前字幕顺序和最终素材选择组成的公开时间线。项目必须为 `ready`，每个片段必须有有效且磁盘文件存在的素材选择，否则返回 409：
+
+- `PROJECT_NOT_READY`
+- `PREVIEW_SEGMENTS_EMPTY`
+- `PREVIEW_SELECTION_MISSING`
+- `PREVIEW_ASSET_MISSING`
+
+### GET `/api/v1/projects/{project_id}/preview`
+
+返回：
+
+```json
+{
+  "preview": null,
+  "timeline": {}
+}
+```
+
+已有预览时 `preview` 为 PreviewRender，并嵌套其当前 Job；尚未生成时为 `null`。
+
+### POST `/api/v1/projects/{project_id}/preview`
+
+Body：
+
+```json
+{"force": false}
+```
+
+Response: HTTP 202
+
+```json
+{
+  "preview": {},
+  "timeline": {},
+  "idempotent_replay": false
+}
+```
+
+服务端根据片段版本、顺序、字幕、素材及片段时长计算 `input_hash`。相同时间线正在渲染或已有有效输出时复用原任务/结果并返回 `idempotent_replay=true`；`force=true` 仅允许在没有活动预览任务时重新生成。总时长超过配置上限返回 422 `PREVIEW_TOO_LONG`。
+
+成功后 `output_url` 指向 `/media/previews/{project_id}/...mp4`。生成能力依赖 ffmpeg；字幕烧录取决于部署镜像中的字幕滤镜和字体支持。
+
+## 10. 运行与审计
 
 ### GET `/api/v1/runs`
 
@@ -465,7 +559,7 @@ Token 用量只使用以下三个顶层字段作为公开 API 契约：
 
 审计返回不包含 API Key、Authorization Header、服务端绝对路径或未经限制的全量 Provider 响应。
 
-## 10. 演示故障
+## 11. 演示故障
 
 ### POST `/api/v1/demo/faults/next`
 
@@ -490,7 +584,7 @@ Response：
 - `none` 清除尚未消费的故障。
 - 该接口只应在明确 Demo 环境可用，生产多用户版必须移除或受管理员权限保护。
 
-## 11. 客户端重试策略
+## 12. 客户端重试策略
 
 - GET 请求可对网络短断做有限自动重试。
 - 创建项目仅在保留同一 `Idempotency-Key` 时重试。

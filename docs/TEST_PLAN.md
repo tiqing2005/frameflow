@@ -9,6 +9,8 @@
 - 人工文本编辑、顺序与素材选择经刷新/API 重读不丢。
 - 幂等、版本冲突、失败、重试、取消与 Worker 恢复路径可重复。
 - 素材、运行记录和审计记录是真实数据，不依赖前端写死结果。
+- 自动标签、向量混排、时间线和预览渲染记录实际 provider/model/输入版本与降级状态。
+- 预览任务的重复请求、并发请求、超时、失败和重试不会产生孤儿任务或覆盖错误结果。
 - 无 ASR/LLM 时系统如实失败或降级，不伪造外部 AI 调用。
 
 ## 2. 测试层次
@@ -176,6 +178,12 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | API-15 | 项目删除 | 从属项目数据清理，全局 Asset 保留 |
 | API-16 | 运行记录 Token 序列化 | 新记录与历史 `output_summary.tokens` 均只对外返回顶层 `input_tokens/output_tokens/total_tokens`，不返回同义并行字段 |
 | API-17 | 无 Token 运行记录 | 规则任务或 Provider 未报告用量时三个 Token 字段为 `null`，不得序列化成伪造的 `0` |
+| API-18 | 素材自动标签 | tags/keywords 留空时得到规则或 LLM 建议，并保存 `asset_tagging` AIRun 的实际来源 |
+| API-19 | Embedding 校验与回退 | 数量/维度/有限值异常时安全回退字符相似；正常向量记录真实模型与来源 |
+| API-20 | 时间线 | 按片段顺序返回连续时长和公开素材，不泄露 `storage_path` |
+| API-21 | 预览幂等 | 同一输入指纹只保留一个活动预览 Job；成功结果可复用，force 不制造孤儿任务 |
+| API-22 | 预览 Worker | 成功、可重试失败、耗尽失败均更新 Job/Preview/AIRun/Audit，输出 URL 仅在文件成功后出现 |
+| API-23 | API 限流 | 读写桶独立；超限返回 429、`Retry-After`、request_id，健康接口不受影响 |
 
 ### 6.3 故障、重试和恢复
 
@@ -189,6 +197,8 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | FAIL-06 | Worker 崩溃恢复 | 租约过期后可重排/续处理，结果不重复 |
 | FAIL-07 | API 重启持久化 | 重启后项目/任务/编辑/选择/事件仍可读 |
 | FAIL-08 | 无本地 ASR/无 Key | 媒体任务显式 `ASR_*` 配置/依赖错误，不生成假字幕 |
+| FAIL-09 | Worker 尝试耗尽 | 恢复任务达到 `max_attempts` 后不再领取，记录 `JOB_ATTEMPTS_EXHAUSTED` |
+| FAIL-10 | 硬超时线程未退出 | 当前任务按策略失败/重试，Worker 暂停领取新任务，不持续累积线程 |
 
 ### 6.4 前端运行记录统计
 
@@ -239,6 +249,14 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 - 快速双击创建/重试/采用：按钮禁用且服务端幂等，无重复数据。
 - 停止 API 后操作：显示网络错误和重试入口，已有页面不伪装已保存。
 - 恢复 API 后重试查询，已持久数据重新出现。
+
+### E2E-04：时间线与组合预览
+
+1. 工作台展示与字幕顺序一致的素材时间线，片段宽度反映时长。
+2. 点击时间线片段能定位对应字幕，390px 视口可横向滚动且无全页溢出。
+3. 先保存字幕草稿，再创建预览；按钮在活动任务期间禁用重复创建。
+4. 页面轮询预览 Job，显示进度/错误；完成后使用后端 `output_url` 播放 MP4。
+5. 快速切换项目或卸载页面时取消旧轮询，旧响应不能覆盖当前项目。
 
 ## 9. 响应式与可访问性
 
@@ -329,6 +347,21 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 - 主演示脚本完整彩排至少 1 次，故障注入在彩排后清零。
 
 ## 15. 执行记录模板
+
+### 2026-07-14 提交前验证记录
+
+- 后端 `python -m pytest`：PASS，`70 passed, 1 deselected`，29.87s。
+- 前端 `npm run lint`：PASS。
+- 前端 `npm run build`：PASS，1785 modules transformed，输出 JS gzip 90.19 kB。
+- 前端 `npm run test:browser`：PASS，Chromium `19 passed`，包含完整闭环、拖动排序、快速替换、失败回滚、保存竞态、时间线与 390px 预览布局。
+- 真实 LLM live 测试：PASS，使用本地未提交 `.env` 调用 OpenAI-compatible DeepSeek 路径，断言 `degraded=false`；输出与证据文件均不含密钥。
+- 本地向量评测：混合排序(向量) Hit@3 `0.9412`、MRR `0.7966`、nDCG@3 `0.8288`。
+- ffmpeg 冒烟：图片 + 视频 2 片段、3 秒、1280×720，输出 577,972 bytes；本机编码器 `libopenh264`。本机 ffmpeg 缺少字幕能力，因此该次 `subtitles_burned=false`；Docker 镜像安装 Debian ffmpeg 与 Noto CJK 字体，仍需 Docker daemon 可用后复验。
+- `docker compose --env-file deploy/.env.example config --quiet`：PASS；Docker daemon 未运行，因此镜像构建、容器内 Caddy validate 和字幕镜像复验未执行。
+- 本地只读 acceptance：PASS，live/ready/seed/projects/runs/audit 全部 HTTP 200，活动素材 39 个；使用 `-SkipCreate`，未写入新项目。
+- 公网 acceptance / 部署：NOT RUN；本轮按要求只开发、验证并推送，不部署。
+
+最终提交前仍需在所有代码合并后复跑敏感信息、大文件和 Git 暂存区检查；最终结果以提交汇报为准。
 
 每次正式提交前复制一份记录，填写真实结果；不应预先填“全部通过”。
 
