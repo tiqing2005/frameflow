@@ -1,5 +1,5 @@
 /* oxlint-disable react/only-export-components -- shared UI hooks and formatters intentionally live with the primitives they support */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -100,23 +100,19 @@ export function EmptyState({ icon, title, description, action }: { icon?: ReactN
   )
 }
 
-export function AssetVisual({ asset, className = '', alt, contain = false }: { asset?: Asset | null; className?: string; alt?: string; contain?: boolean }) {
+export function AssetVisual({ asset, className = '', alt, contain = false, controls = false }: { asset?: Asset | null; className?: string; alt?: string; contain?: boolean; controls?: boolean }) {
   const [failed, setFailed] = useState(false)
   const url = assetUrl(asset)
   useEffect(() => setFailed(false), [url])
-  const colors = useMemo(() => {
-    const value = asset?.id || asset?.name || 'frameflow'
-    let hash = 0
-    for (const char of value) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0
-    const hue = Math.abs(hash) % 360
-    return [`hsl(${hue} 68% 43%)`, `hsl(${(hue + 52) % 360} 74% 60%)`]
-  }, [asset?.id, asset?.name])
   if (url && !failed) {
+    if (asset?.kind === 'video') {
+      return <video className={`${className} asset-video`.trim()} src={url} aria-label={alt || asset.name || '视频素材预览'} controls={controls} muted={!controls} playsInline preload="metadata" onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
+    }
     return <img className={className} src={url} alt={alt || asset?.name || '素材预览'} onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
   }
   return (
-    <div className={`asset-fallback ${className}`} role="img" aria-label={alt || asset?.name || '素材占位'} style={{ '--asset-a': colors[0], '--asset-b': colors[1] } as React.CSSProperties}>
-      <span className="fallback-mark">F</span>
+    <div className={`asset-fallback ${className}`} role="img" aria-label={alt || asset?.name || '素材占位'}>
+      <span className="fallback-mark">FF</span>
       <span>{asset?.name || '等待选择素材'}</span>
     </div>
   )

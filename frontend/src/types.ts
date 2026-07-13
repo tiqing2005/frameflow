@@ -143,8 +143,9 @@ export interface Run {
   status?: string
   degraded?: boolean
   latency_ms?: number | null
-  prompt_tokens?: number | null
-  completion_tokens?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  total_tokens?: number | null
   error_message?: string | null
   created_at: string
 }

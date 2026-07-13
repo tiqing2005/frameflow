@@ -1,13 +1,13 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react'
 import {
   ArrowLeft,
+  ArrowRight,
   AudioLines,
   Check,
   FileAudio,
   FileText,
   FileVideo,
   Info,
-  Sparkles,
   UploadCloud,
   X,
 } from 'lucide-react'
@@ -86,9 +86,8 @@ export function NewProjectPage() {
       <div className="new-project-layout">
         <section className="creation-card">
           <div className="creation-head">
-            <span className="eyebrow"><Sparkles size={14} /> 新建视觉匹配项目</span>
-            <h1>从内容开始，生成视觉节奏</h1>
-            <p>FrameFlow 会分析语义、提取关键词，并为每个内容片段匹配至少 3 个画面候选。</p>
+            <h1>创建项目</h1>
+            <p>导入文本或音视频，生成可编辑的内容片段和画面候选。</p>
           </div>
           <div className="source-tabs" role="tablist" aria-label="内容来源">
             <button type="button" role="tab" disabled={submitting} aria-selected={mode === 'text'} className={mode === 'text' ? 'active' : ''} onClick={() => { setMode('text'); setError('') }}><FileText size={18} /><span><b>粘贴文本</b><small>文案、脚本、字幕</small></span></button>
@@ -143,20 +142,20 @@ export function NewProjectPage() {
           <div className="form-actions">
             {submitting ? <span className="button button-secondary" aria-disabled="true">取消</span> : <AppLink href="/projects" className="button button-secondary">取消</AppLink>}
             <button type="button" className="button button-primary button-large" disabled={submitting} onClick={() => void submit()}>
-              {submitting ? <InlineSpinner label="正在创建项目" /> : <><Sparkles size={18} /> 开始智能匹配</>}
+              {submitting ? <InlineSpinner label="正在创建项目" /> : <>创建并开始匹配 <ArrowRight size={18} /></>}
             </button>
           </div>
         </section>
 
         <aside className="process-guide">
-          <span className="guide-kicker">接下来会发生什么</span>
+          <span className="guide-kicker">处理流程</span>
           <ol>
             <li><i>1</i><div><strong>解析与转写</strong><p>{mode === 'text' ? '校验文案并识别句间结构' : '提取音轨并生成逐字稿'}</p></div></li>
             <li><i>2</i><div><strong>语义分段</strong><p>按表达主题和视觉节奏拆成片段</p></div></li>
             <li><i>3</i><div><strong>透明匹配</strong><p>综合语义、关键词和主题计算得分</p></div></li>
             <li><i>4</i><div><strong>人工精修</strong><p>调整文本、顺序与最终画面选择</p></div></li>
           </ol>
-          <div className="guide-tip"><Sparkles size={17} /><p><strong>可恢复的异步处理</strong><br />即使服务重启，排队中的任务也会继续执行；重复提交不会创建两份数据。</p></div>
+          <div className="guide-tip"><Info size={17} /><p><strong>处理可恢复</strong><br />排队任务会持续保存；重复提交不会创建两份数据。</p></div>
         </aside>
       </div>
     </main>

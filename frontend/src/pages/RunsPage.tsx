@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { api, errorMessage } from '../api'
 import { EmptyState, ErrorState, formatDate, formatDuration, PageLoader, useToast } from '../components/ui'
+import { formatRunTokenUsage, totalRunTokens } from '../runTokens'
 import type { Run } from '../types'
 
 export function RunsPage() {
@@ -40,7 +41,7 @@ export function RunsPage() {
       successful,
       degraded: runs.filter((run) => run.degraded).length,
       average: latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : 0,
-      tokens: runs.reduce((sum, run) => sum + (run.prompt_tokens || 0) + (run.completion_tokens || 0), 0),
+      tokens: totalRunTokens(runs),
     }
   }, [runs])
 
@@ -55,7 +56,7 @@ export function RunsPage() {
       <section className="metric-grid run-metrics">
         <div className="metric-card"><div className="metric-icon green"><CheckCircle2 size={20} /></div><div><span>成功调用</span><strong>{summary.successful}</strong><small>共 {runs.length} 条运行</small></div></div>
         <div className="metric-card"><div className="metric-icon blue"><Gauge size={20} /></div><div><span>平均耗时</span><strong>{summary.average ? `${(summary.average / 1000).toFixed(1)}s` : '—'}</strong><small>端到端模型延迟</small></div></div>
-        <div className="metric-card"><div className="metric-icon purple"><Zap size={20} /></div><div><span>Token 用量</span><strong>{summary.tokens.toLocaleString()}</strong><small>输入与输出合计</small></div></div>
+        <div className="metric-card"><div className="metric-icon purple"><Zap size={20} /></div><div><span>Token 用量</span><strong>{summary.tokens == null ? '—' : summary.tokens.toLocaleString()}</strong><small>输入与输出合计</small></div></div>
         <div className="metric-card"><div className="metric-icon amber"><AlertTriangle size={20} /></div><div><span>规则降级</span><strong>{summary.degraded}</strong><small>结果仍可确定性复现</small></div></div>
       </section>
       <section className="section-block">
@@ -75,7 +76,7 @@ export function RunsPage() {
                   <ChevronDown size={16} className={open ? 'rotated' : ''} />
                 </button>
                 {open && <div className="run-detail">
-                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '规则降级成功' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {run.provider || '—'}</strong></div><div><span>Token</span><strong>{(run.prompt_tokens || 0).toLocaleString()} 输入 · {(run.completion_tokens || 0).toLocaleString()} 输出</strong></div>
+                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '规则降级成功' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {run.provider || '—'}</strong></div><div><span>Token</span><strong>{formatRunTokenUsage(run)}</strong></div>
                   {(run.error_message || run.degraded) && <p className="run-message"><AlertTriangle size={15} /> {run.error_message || '模型调用不可用，本次使用确定性规则完成，所有结果仍已正常持久化。'}</p>}
                 </div>}
               </article>

@@ -84,7 +84,7 @@ export const api = {
   project: (id: string) => request<ProjectDetail>(`/projects/${encodeURIComponent(id)}`),
   deleteProject: (id: string) => request<void>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   job: (id: string) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}`),
-  retryJob: (id: string) => request<JobDetail | { job: JobDetail['job'] }>(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
+  retryJob: (id: string) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   cancelJob: (id: string) => request<JobDetail | { job: JobDetail['job'] }>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   updateSegment: (id: string, changes: Partial<Pick<Segment, 'text' | 'topic' | 'keywords'>> & { version: number }) =>
     request<Segment>(`/segments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }),

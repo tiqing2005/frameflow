@@ -3,15 +3,15 @@ import {
   ArrowRight,
   AudioLines,
   CircleAlert,
+  CircleHelp,
   Clock3,
   FileText,
+  FilePlus2,
   FolderKanban,
   Image,
   MoreHorizontal,
   Plus,
-  Sparkles,
   Trash2,
-  WandSparkles,
 } from 'lucide-react'
 import { api, errorMessage } from '../api'
 import { EmptyState, ErrorState, formatDate, PageLoader, StatusPill, useToast } from '../components/ui'
@@ -70,9 +70,8 @@ export function DashboardPage() {
     <main className="page dashboard-page">
       <div className="page-heading-row">
         <div>
-          <span className="eyebrow"><Sparkles size={14} /> 智能字幕视觉匹配</span>
-          <h1>让每一句话，都有恰到好处的画面</h1>
-          <p>导入文本、音频或视频，获得可解释、可编辑、可追溯的素材匹配结果。</p>
+          <h1>项目</h1>
+          <p>管理脚本、内容片段和素材匹配进度。</p>
         </div>
         <AppLink href="/projects/new" className="button button-primary heading-action"><Plus size={18} /> 新建项目</AppLink>
       </div>
@@ -82,19 +81,19 @@ export function DashboardPage() {
       <section className="metric-grid" aria-label="工作区概览">
         <div className="metric-card metric-featured">
           <div className="metric-icon"><FolderKanban size={20} /></div>
-          <div><span>全部项目</span><strong>{data?.metrics.projects ?? 0}</strong><small>持久化创作项目</small></div>
+          <div><span>全部项目</span><strong>{data?.metrics.projects ?? 0}</strong></div>
         </div>
         <div className="metric-card">
           <div className="metric-icon purple"><Image size={20} /></div>
-          <div><span>本地素材</span><strong>{data?.metrics.total_assets ?? 0}</strong><small>可检索、可复用</small></div>
+          <div><span>素材</span><strong>{data?.metrics.total_assets ?? 0}</strong></div>
         </div>
         <div className="metric-card">
           <div className="metric-icon amber"><Clock3 size={20} /></div>
-          <div><span>正在处理</span><strong>{data?.metrics.running_jobs ?? 0}</strong><small>异步任务运行中</small></div>
+          <div><span>处理中</span><strong>{data?.metrics.running_jobs ?? 0}</strong></div>
         </div>
         <div className="metric-card">
           <div className="metric-icon red"><CircleAlert size={20} /></div>
-          <div><span>需要关注</span><strong>{data?.metrics.failed_jobs ?? 0}</strong><small>可重试失败任务</small></div>
+          <div><span>待处理</span><strong>{data?.metrics.failed_jobs ?? 0}</strong></div>
         </div>
       </section>
 
@@ -105,9 +104,9 @@ export function DashboardPage() {
         </div>
         {!error && data?.recent_projects.length === 0 ? (
           <EmptyState
-            icon={<WandSparkles size={26} />}
-            title="从第一段内容开始"
-            description="粘贴一段文案，或上传真实音视频。FrameFlow 会把它拆成镜头并给出可解释的画面建议。"
+            icon={<FilePlus2 size={26} />}
+            title="还没有项目"
+            description="导入文案或音视频，开始拆分内容片段并匹配素材。"
             action={<AppLink href="/projects/new" className="button button-primary"><Plus size={17} /> 创建首个项目</AppLink>}
           />
         ) : (
@@ -148,9 +147,9 @@ export function DashboardPage() {
       </section>
 
       <section className="workflow-callout">
-        <div className="callout-icon"><WandSparkles size={23} /></div>
-        <div><strong>为什么是“可解释匹配”？</strong><p>每个候选都展示语义、关键词和主题得分，低相关的多样性补位也会如实标注。</p></div>
-        <AppLink href="/demo" className="text-link">查看演示能力 <ArrowRight size={15} /></AppLink>
+        <div className="callout-icon"><CircleHelp size={22} /></div>
+        <div><strong>匹配规则</strong><p>候选会展示命中词、匹配依据和补位标识，方便人工判断。</p></div>
+        <AppLink href="/demo" className="text-link">查看演示工具 <ArrowRight size={15} /></AppLink>
       </section>
     </main>
   )

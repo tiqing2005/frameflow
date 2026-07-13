@@ -3,11 +3,11 @@ import {
   Beaker,
   Bot,
   ChevronLeft,
+  Clapperboard,
   FolderKanban,
   Image,
   Menu,
   Plus,
-  Sparkles,
   X,
 } from 'lucide-react'
 import './App.css'
@@ -22,17 +22,16 @@ import { RunsPage } from './pages/RunsPage'
 import { DemoPage } from './pages/DemoPage'
 
 const navItems = [
-  { label: '项目台', path: '/projects', icon: FolderKanban, routes: ['dashboard', 'new', 'processing', 'project'] },
+  { label: '项目', path: '/projects', icon: FolderKanban, routes: ['dashboard', 'new', 'processing', 'project'] },
   { label: '素材库', path: '/assets', icon: Image, routes: ['assets'] },
-  { label: 'AI 运行记录', path: '/runs', icon: Bot, routes: ['runs'] },
-  { label: '演示实验室', path: '/demo', icon: Beaker, routes: ['demo'] },
+  { label: '运行记录', path: '/runs', icon: Bot, routes: ['runs'] },
 ]
 
 function PageContent({ route }: { route: Route }) {
   switch (route.name) {
     case 'dashboard': return <DashboardPage />
     case 'new': return <NewProjectPage />
-    case 'processing': return <ProcessingPage projectId={route.projectId} initialJobId={route.jobId} />
+    case 'processing': return <ProcessingPage key={`${route.projectId}:${route.jobId || ''}`} projectId={route.projectId} initialJobId={route.jobId} />
     case 'project': return <WorkbenchPage projectId={route.projectId} />
     case 'assets': return <AssetsPage />
     case 'runs': return <RunsPage />
@@ -57,13 +56,13 @@ function AppShell() {
       <aside className={`sidebar${menuOpen ? ' is-open' : ''}`}>
         <div className="brand-row">
           <AppLink href="/projects" className="brand" onClick={() => setMenuOpen(false)}>
-            <span className="brand-symbol"><Sparkles size={19} strokeWidth={2.4} /></span>
-            <span><b>FrameFlow</b><em>AI</em></span>
+            <span className="brand-symbol"><Clapperboard size={19} strokeWidth={2.2} /></span>
+            <span><b>FrameFlow</b></span>
           </AppLink>
           <button type="button" className="icon-button mobile-only" aria-label="关闭导航" onClick={() => setMenuOpen(false)}><X size={20} /></button>
         </div>
         <AppLink href="/projects/new" className="button button-primary sidebar-create" onClick={() => setMenuOpen(false)}>
-          <Plus size={17} /> 新建匹配项目
+          <Plus size={17} /> 新建项目
         </AppLink>
         <nav className="main-nav" aria-label="主导航">
           <span className="nav-caption">工作空间</span>
@@ -73,9 +72,15 @@ function AppShell() {
             </AppLink>
           ))}
         </nav>
+        <nav className="main-nav utility-nav" aria-label="系统工具">
+          <span className="nav-caption">系统</span>
+          <AppLink href="/demo" onClick={() => setMenuOpen(false)} className={`nav-item${route.name === 'demo' ? ' active' : ''}`}>
+            <Beaker size={18} /><span>演示工具</span>
+          </AppLink>
+        </nav>
         <div className="sidebar-foot">
           <span className="service-dot" />
-          <div><strong>本地工作区</strong><small>数据实时持久化</small></div>
+          <div><strong>FrameFlow Studio</strong><small>内容与素材工作台</small></div>
           <span className="version-chip">v1.0</span>
         </div>
       </aside>
@@ -83,7 +88,7 @@ function AppShell() {
       <section className="main-shell">
         <header className="mobile-header">
           <button type="button" className="icon-button" aria-label="打开导航" onClick={() => setMenuOpen(true)}><Menu size={21} /></button>
-          <AppLink href="/projects" className="brand compact"><span className="brand-symbol"><Sparkles size={17} /></span><span><b>FrameFlow</b> <em>AI</em></span></AppLink>
+          <AppLink href="/projects" className="brand compact"><span className="brand-symbol"><Clapperboard size={17} /></span><span><b>FrameFlow</b></span></AppLink>
           {route.name === 'project' ? <button className="icon-button" type="button" aria-label="返回项目台" onClick={() => navigate('/projects')}><ChevronLeft size={21} /></button> : <span className="header-spacer" />}
         </header>
         <PageContent route={route} />

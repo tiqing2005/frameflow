@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import {
   Check,
   Filter,
   FolderOpen,
   Image as ImageIcon,
-  Library,
+  Play,
   Plus,
   Search,
   Tags,
@@ -14,6 +14,10 @@ import {
 import { api, errorMessage } from '../api'
 import { AssetVisual, EmptyState, ErrorState, formatDate, InlineSpinner, PageLoader, useToast } from '../components/ui'
 import type { Asset } from '../types'
+
+const ASSET_FILE_PATTERN = /\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i
+const IMAGE_FILE_PATTERN = /\.(png|jpe?g|webp|gif)$/i
+const ASSET_FILE_ACCEPT = '.png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov'
 
 export function AssetsPage() {
   const [assets, setAssets] = useState<Asset[]>([])
@@ -47,7 +51,7 @@ export function AssetsPage() {
   return (
     <main className="page assets-page">
       <div className="page-heading-row compact-heading">
-        <div><span className="eyebrow"><Library size={14} /> 视觉资产中心</span><h1>素材库</h1><p>上传、标注并检索可重复使用的画面，匹配引擎会读取名称、标签和关键词。</p></div>
+        <div><h1>素材库</h1><p>管理图片和视频，为内容片段提供可检索的画面来源。</p></div>
         <button type="button" className="button button-primary heading-action" onClick={() => setUploadOpen(true)}><Plus size={17} /> 上传素材</button>
       </div>
 
@@ -69,7 +73,7 @@ export function AssetsPage() {
         <section className={`asset-gallery${loading ? ' is-refreshing' : ''}`} aria-busy={loading}>
           {assets.map((asset) => (
             <button type="button" className="asset-card" key={asset.id} onClick={() => setSelected(asset)}>
-              <div className="asset-card-visual"><AssetVisual asset={asset} /><span className="asset-kind-chip">{asset.kind === 'video' ? '视频' : '图片'}</span></div>
+              <div className="asset-card-visual"><AssetVisual asset={asset} />{asset.kind === 'video' && <span className="asset-play-indicator"><Play size={15} fill="currentColor" /></span>}<span className="asset-kind-chip">{asset.kind === 'video' ? '视频' : '图片'}</span></div>
               <div className="asset-card-body"><h3>{asset.name}</h3><div className="tag-row">{asset.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}{asset.tags.length === 0 && <span className="muted-tag">暂无标签</span>}</div><small>{asset.width && asset.height ? `${asset.width}×${asset.height}` : '本地素材'} · {formatDate(asset.created_at, false)}</small></div>
             </button>
           ))}
@@ -95,7 +99,10 @@ function UploadAssetModal({ onClose, onUploaded }: { onClose: () => void; onUplo
 
   const choose = (next?: File) => {
     if (!next) return
-    if (!next.type.startsWith('image/') && !next.type.startsWith('video/')) { setError('请选择图片或视频文件'); return }
+    if (!ASSET_FILE_PATTERN.test(next.name)) {
+      setError('仅支持 PNG、JPG/JPEG、WebP、GIF、MP4、WebM 或 MOV；出于安全原因不支持 SVG')
+      return
+    }
     if (next.size > 100 * 1024 * 1024) { setError('单个素材不能超过 100 MB'); return }
     setFile(next)
     setName((current) => current || next.name.replace(/\.[^.]+$/, ''))
@@ -123,8 +130,8 @@ function UploadAssetModal({ onClose, onUploaded }: { onClose: () => void; onUplo
       <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="upload-title">
         <div className="modal-head"><div><span className="modal-icon"><UploadCloud size={20} /></span><div><h2 id="upload-title">上传新素材</h2><p>标签越准确，匹配结果越相关</p></div></div><button className="icon-button" type="button" aria-label="关闭" disabled={uploading} onClick={onClose}><X size={19} /></button></div>
         <div className="modal-body">
-          {!file ? <button type="button" className={`drop-zone asset-drop${dragging ? ' dragging' : ''}`} onClick={() => input.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={drop}><span className="upload-icon"><ImageIcon size={25} /></span><strong>拖放图片或视频，或点击选择</strong><span>PNG、JPG、WebP、SVG、MP4 · 最大 100 MB</span></button> : <div className="upload-preview"><div className="upload-local-preview">{file.type.startsWith('image') ? <img src={URL.createObjectURL(file)} alt="待上传素材预览" /> : <ImageIcon size={28} />}</div><div><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB</span></div><button type="button" className="icon-button" onClick={() => setFile(null)}><X size={17} /></button></div>}
-          <input ref={input} hidden type="file" accept="image/*,video/mp4" onChange={(event) => choose(event.target.files?.[0])} />
+          {!file ? <button type="button" className={`drop-zone asset-drop${dragging ? ' dragging' : ''}`} onClick={() => input.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={drop}><span className="upload-icon"><ImageIcon size={25} /></span><strong>拖放图片或视频，或点击选择</strong><span>PNG、JPG/JPEG、WebP、GIF、MP4、WebM、MOV（不支持 SVG）· 最大 100 MB</span></button> : <div className="upload-preview"><div className="upload-local-preview"><LocalAssetPreview file={file} /></div><div><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB</span></div><button type="button" className="icon-button" onClick={() => setFile(null)}><X size={17} /></button></div>}
+          <input ref={input} hidden type="file" accept={ASSET_FILE_ACCEPT} onChange={(event) => choose(event.target.files?.[0])} />
           <div className="form-field"><label htmlFor="asset-name">素材名称 <span>必填</span></label><input id="asset-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：城市夜间交通" maxLength={80} /></div>
           <div className="form-field"><label htmlFor="asset-tags">主题标签 <span>逗号分隔</span></label><div className="input-with-icon"><Tags size={16} /><input id="asset-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="城市，交通，夜景" /></div></div>
           <div className="form-field"><label htmlFor="asset-keywords">画面关键词 <span>逗号分隔</span></label><input id="asset-keywords" value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="车流，灯光，通勤，现代化" /></div>
@@ -160,7 +167,7 @@ function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () 
     <div className="drawer-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <aside className="asset-drawer" role="dialog" aria-modal="true" aria-label="素材详情">
         <div className="drawer-head"><div><span className="eyebrow">素材详情</span><h2>{asset.name}</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={19} /></button></div>
-        <div className="drawer-preview"><AssetVisual asset={asset} contain /></div>
+        <div className="drawer-preview"><AssetVisual asset={asset} contain controls={asset.kind === 'video'} /></div>
         <div className="drawer-body">
           {editing ? <>
             <div className="form-field"><label>素材名称</label><input value={name} onChange={(event) => setName(event.target.value)} /></div>
@@ -180,3 +187,10 @@ function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () 
 }
 
 const split = (value: string) => value.split(/[，,]/).map((item) => item.trim()).filter(Boolean)
+
+function LocalAssetPreview({ file }: { file: File }) {
+  const url = useMemo(() => URL.createObjectURL(file), [file])
+  useEffect(() => () => URL.revokeObjectURL(url), [url])
+  if (IMAGE_FILE_PATTERN.test(file.name)) return <img src={url} alt="待上传素材预览" />
+  return <video src={url} muted playsInline preload="metadata" aria-label="待上传视频预览" />
+}

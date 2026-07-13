@@ -14,16 +14,15 @@ import {
   Info,
   ListVideo,
   LoaderCircle,
+  Play,
   RefreshCw,
   Save,
   Search,
-  Sparkles,
   Tags,
   TextCursorInput,
-  WandSparkles,
   X,
 } from 'lucide-react'
-import { api, errorMessage } from '../api'
+import { api, ApiError, errorMessage } from '../api'
 import {
   AssetVisual,
   EmptyState,
@@ -35,11 +34,12 @@ import {
   StatusPill,
   useToast,
 } from '../components/ui'
-import { AppLink, navigate } from '../router'
+import { addNavigationGuard, AppLink, navigate } from '../router'
 import type { Asset, ProjectDetail, Recommendation, Segment, Selection } from '../types'
 
 interface SegmentDraft { text: string; topic: string; keywords: string }
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+type SaveResult = { ok: true; segmentId: string | null } | { ok: false; segmentId: string; error: unknown }
 type MobilePane = 'segments' | 'editor' | 'matches'
 
 const asDraft = (segment: Segment): SegmentDraft => ({
@@ -60,33 +60,73 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<SegmentDraft>({ text: '', topic: '', keywords: '' })
   const [saveState, setSaveState] = useState<SaveState>('idle')
+  const [conflict, setConflict] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [leftView, setLeftView] = useState<'segments' | 'transcript'>('segments')
   const [mobilePane, setMobilePane] = useState<MobilePane>('editor')
   const [query, setQuery] = useState('')
+  const [searchKind, setSearchKind] = useState('')
+  const [searchTag, setSearchTag] = useState('')
   const [searchResults, setSearchResults] = useState<Asset[]>([])
   const [searching, setSearching] = useState(false)
   const [selectingAsset, setSelectingAsset] = useState<string | null>(null)
   const [rematching, setRematching] = useState(false)
+  const [switchingSegment, setSwitchingSegment] = useState(false)
   const [reordering, setReordering] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const saveTimer = useRef<number | null>(null)
-  const requestVersion = useRef(0)
+  const savedResetTimer = useRef<number | null>(null)
+  const detailRef = useRef<ProjectDetail | null>(null)
+  const selectedIdRef = useRef<string | null>(null)
+  const draftRef = useRef<SegmentDraft>(draft)
+  const draftRevision = useRef(0)
+  const saveStateRef = useRef<SaveState>('idle')
+  const savePromise = useRef<Promise<SaveResult> | null>(null)
+  const rematchPromise = useRef<Promise<void> | null>(null)
+  const segmentSwitchPromise = useRef<Promise<void> | null>(null)
+  const hydratedSegmentId = useRef<string | null>(null)
+  const searchVersion = useRef(0)
   const toast = useToast()
 
-  const load = useCallback(async (showLoader = false) => {
+  const updateSaveState = useCallback((state: SaveState) => {
+    saveStateRef.current = state
+    setSaveState(state)
+  }, [])
+
+  const updateSegmentById = useCallback((segmentId: string, updater: (segment: Segment) => Segment) => {
+    setDetail((current) => {
+      if (!current) return current
+      const next = {
+        ...current,
+        segments: current.segments.map((segment) => segment.id === segmentId ? updater(segment) : segment),
+      }
+      detailRef.current = next
+      return next
+    })
+  }, [])
+
+  const load = useCallback(async (showLoader = false, discardDraft = false) => {
     if (showLoader) setLoading(true)
     try {
       const result = await api.project(projectId)
       if (result.project.status !== 'ready' && result.current_job?.status !== 'succeeded') {
-        navigate(`/projects/${projectId}/processing`, { replace: true })
+        void navigate(`/projects/${projectId}/processing`, { replace: true })
         return
       }
       const ordered = [...(result.segments || [])].sort((a, b) => a.position - b.position)
-      setDetail({ ...result, segments: ordered })
-      setSelectedId((current) => current && ordered.some((item) => item.id === current) ? current : ordered[0]?.id || null)
+      const nextDetail = { ...result, segments: ordered }
+      const currentSelectedId = selectedIdRef.current
+      const nextSelectedId = currentSelectedId && ordered.some((item) => item.id === currentSelectedId)
+        ? currentSelectedId
+        : ordered[0]?.id || null
+      detailRef.current = nextDetail
+      selectedIdRef.current = nextSelectedId
+      if (discardDraft) hydratedSegmentId.current = null
+      setDetail(nextDetail)
+      setSelectedId(nextSelectedId)
       setError('')
+      setConflict(false)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -101,45 +141,99 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
   const selected = selectedIndex >= 0 ? segments[selectedIndex] : undefined
 
   useEffect(() => {
-    if (!selected) return
-    setDraft(asDraft(selected))
-    setSaveState('idle')
-    requestVersion.current += 1
-  }, [selected])
+    if (!selected || hydratedSegmentId.current === selected.id) return
+    const nextDraft = asDraft(selected)
+    hydratedSegmentId.current = selected.id
+    selectedIdRef.current = selected.id
+    draftRef.current = nextDraft
+    draftRevision.current = 0
+    setDraft(nextDraft)
+    updateSaveState('idle')
+  }, [selected, updateSaveState])
 
-  const updateSelected = useCallback((updater: (segment: Segment) => Segment) => {
-    setDetail((current) => current ? {
-      ...current,
-      segments: current.segments.map((segment) => segment.id === selectedId ? updater(segment) : segment),
-    } : current)
-  }, [selectedId])
+  useEffect(() => { detailRef.current = detail }, [detail])
 
-  const save = useCallback(async () => {
-    if (!selected || saveState === 'saving') return
-    const currentRequest = ++requestVersion.current
-    setSaveState('saving')
-    try {
-      const updated = await api.updateSegment(selected.id, {
-        text: draft.text.trim(),
-        topic: draft.topic.trim(),
-        keywords: draft.keywords.split(/[，,]/).map((value) => value.trim()).filter(Boolean),
-        version: selected.version,
-      })
-      if (currentRequest !== requestVersion.current) return
-      updateSelected((segment) => ({ ...segment, ...updated, recommendations: updated.recommendations || segment.recommendations, selection: updated.selection ?? segment.selection }))
-      setSaveState('saved')
-      window.setTimeout(() => setSaveState((state) => state === 'saved' ? 'idle' : state), 1800)
-    } catch (err) {
-      if (currentRequest !== requestVersion.current) return
-      setSaveState('error')
-      toast(errorMessage(err), 'error')
-      if ((err as { status?: number }).status === 409) void load()
+  const save = useCallback((): Promise<SaveResult> => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    if (savePromise.current) return savePromise.current
+    if (!['dirty', 'saving', 'error'].includes(saveStateRef.current)) {
+      return Promise.resolve({ ok: true, segmentId: selectedIdRef.current })
     }
-  }, [draft, load, saveState, selected, toast, updateSelected])
+
+    const pending = (async (): Promise<SaveResult> => {
+      const segmentId = selectedIdRef.current
+      if (!segmentId) return { ok: true, segmentId: null }
+      let nextVersion: number | undefined
+
+      while (true) {
+        const segment = detailRef.current?.segments.find((item) => item.id === segmentId)
+        if (!segment) {
+          const missing = new Error('当前字幕片段不存在，请重新加载项目')
+          updateSaveState('error')
+          toast(missing.message, 'error')
+          return { ok: false, segmentId, error: missing }
+        }
+
+        const snapshot = { ...draftRef.current }
+        const revision = draftRevision.current
+        updateSaveState('saving')
+        try {
+          const updated = await api.updateSegment(segmentId, {
+            text: snapshot.text.trim(),
+            topic: snapshot.topic.trim(),
+            keywords: snapshot.keywords.split(/[，,]/).map((value) => value.trim()).filter(Boolean),
+            version: nextVersion ?? segment.version,
+          })
+          nextVersion = updated.version
+          updateSegmentById(segmentId, (current) => ({
+            ...current,
+            ...updated,
+            recommendations: updated.recommendations || current.recommendations,
+            selection: updated.selection ?? current.selection,
+          }))
+          if (selectedIdRef.current !== segmentId) return { ok: true, segmentId }
+          if (draftRevision.current !== revision) {
+            updateSaveState('dirty')
+            continue
+          }
+          setConflict(false)
+          updateSaveState('saved')
+          if (savedResetTimer.current) window.clearTimeout(savedResetTimer.current)
+          savedResetTimer.current = window.setTimeout(() => {
+            if (selectedIdRef.current === segmentId && draftRevision.current === revision && saveStateRef.current === 'saved') {
+              updateSaveState('idle')
+            }
+          }, 1800)
+          return { ok: true, segmentId }
+        } catch (err) {
+          if (selectedIdRef.current === segmentId) {
+            updateSaveState('error')
+            toast(errorMessage(err), 'error')
+            if (err instanceof ApiError && err.status === 409) setConflict(true)
+          }
+          return { ok: false, segmentId, error: err }
+        }
+      }
+    })()
+
+    savePromise.current = pending
+    void pending.finally(() => {
+      if (savePromise.current === pending) savePromise.current = null
+    })
+    return pending
+  }, [toast, updateSaveState, updateSegmentById])
+
+  const ensureSaved = useCallback(async () => {
+    if (!['dirty', 'saving', 'error'].includes(saveStateRef.current)) return true
+    return (await save()).ok
+  }, [save])
 
   const editDraft = (changes: Partial<SegmentDraft>) => {
-    setDraft((current) => ({ ...current, ...changes }))
-    setSaveState('dirty')
+    const next = { ...draftRef.current, ...changes }
+    draftRef.current = next
+    draftRevision.current += 1
+    setDraft(next)
+    updateSaveState('dirty')
   }
 
   useEffect(() => {
@@ -149,62 +243,87 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
     return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }
   }, [draft, save, saveState])
 
-  useEffect(() => () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }, [])
+  useEffect(() => () => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    if (savedResetTimer.current) window.clearTimeout(savedResetTimer.current)
+  }, [])
+
+  useEffect(() => addNavigationGuard(() => ensureSaved()), [ensureSaved])
 
   useEffect(() => {
-    if (!query.trim()) {
+    const warnBeforeLeave = (event: BeforeUnloadEvent) => {
+      if (saveState !== 'dirty' && saveState !== 'saving') return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeLeave)
+    return () => window.removeEventListener('beforeunload', warnBeforeLeave)
+  }, [saveState])
+
+  useEffect(() => {
+    if (!query.trim() && !searchKind && !searchTag.trim()) {
       setSearchResults([])
       setSearching(false)
       return
     }
+    const currentSearch = ++searchVersion.current
     const timer = window.setTimeout(async () => {
       setSearching(true)
       try {
-        const result = await api.assets({ q: query.trim() })
-        setSearchResults(result.items)
+        const result = await api.assets({ q: query.trim() || undefined, kind: searchKind || undefined, tag: searchTag.trim() || undefined })
+        if (currentSearch === searchVersion.current) setSearchResults(result.items)
       } catch (err) {
-        toast(errorMessage(err), 'error')
+        if (currentSearch === searchVersion.current) toast(errorMessage(err), 'error')
       } finally {
-        setSearching(false)
+        if (currentSearch === searchVersion.current) setSearching(false)
       }
     }, 350)
     return () => window.clearTimeout(timer)
-  }, [query, toast])
+  }, [query, searchKind, searchTag, toast])
 
   const selectAsset = async (asset: Asset) => {
     if (!selected || selectingAsset) return
+    const segmentId = selected.id
     setSelectingAsset(asset.id)
     const previous = selected.selection
-    const optimistic: Selection = { segment_id: selected.id, asset_id: asset.id, source: 'manual', asset }
-    updateSelected((segment) => ({ ...segment, selection: optimistic }))
+    const optimistic: Selection = { segment_id: segmentId, asset_id: asset.id, source: 'manual', asset }
+    updateSegmentById(segmentId, (segment) => ({ ...segment, selection: optimistic }))
     try {
-      const result = await api.selectAsset(selected.id, asset.id)
-      if ('selection' in result && result.selection) updateSelected((segment) => ({ ...segment, selection: result.selection }))
-      else if ('id' in result && 'text' in result) updateSelected(() => result as Segment)
+      const result = await api.selectAsset(segmentId, asset.id)
+      if ('selection' in result && result.selection) updateSegmentById(segmentId, (segment) => ({ ...segment, selection: result.selection }))
+      else if ('id' in result && 'text' in result) updateSegmentById(segmentId, () => result as Segment)
       toast(`已将「${asset.name}」设为当前画面`, 'success')
       setQuery('')
     } catch (err) {
-      updateSelected((segment) => ({ ...segment, selection: previous }))
+      updateSegmentById(segmentId, (segment) => ({ ...segment, selection: previous }))
       toast(errorMessage(err), 'error')
     } finally {
       setSelectingAsset(null)
     }
   }
 
-  const rematch = async () => {
-    if (!selected || rematching) return
-    setRematching(true)
-    try {
-      if (saveState === 'dirty') await save()
-      const result = await api.rematchSegment(selected.id)
-      const updated = 'segment' in result ? result.segment : result
-      updateSelected((segment) => ({ ...segment, ...updated }))
-      toast('已根据当前文本重新生成候选', 'success')
-    } catch (err) {
-      toast(errorMessage(err), 'error')
-    } finally {
-      setRematching(false)
-    }
+  const rematch = () => {
+    if (!selectedIdRef.current || rematchPromise.current) return rematchPromise.current
+    const segmentId = selectedIdRef.current
+    const pending = (async () => {
+      setRematching(true)
+      try {
+        if (!await ensureSaved()) return
+        const result = await api.rematchSegment(segmentId)
+        const updated = 'segment' in result ? result.segment : result
+        updateSegmentById(segmentId, (segment) => ({ ...segment, ...updated }))
+        toast('已根据当前文本重新生成候选', 'success')
+      } catch (err) {
+        toast(errorMessage(err), 'error')
+      } finally {
+        setRematching(false)
+      }
+    })()
+    rematchPromise.current = pending
+    void pending.finally(() => {
+      if (rematchPromise.current === pending) rematchPromise.current = null
+    })
+    return pending
   }
 
   const reorder = async (fromId: string, toIndex: number) => {
@@ -219,7 +338,9 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
     setDetail({ ...detail, segments: positioned })
     setReordering(true)
     try {
-      await api.reorderSegments(projectId, positioned.map((item) => item.id))
+      const result = await api.reorderSegments(projectId, positioned.map((item) => item.id))
+      const serverSegments = Array.isArray(result) ? result : result.segments
+      if (serverSegments) setDetail((current) => current ? { ...current, segments: [...serverSegments].sort((a, b) => a.position - b.position) } : current)
       toast('片段顺序已保存', 'success')
     } catch (err) {
       setDetail((current) => current ? { ...current, segments: previous } : current)
@@ -236,10 +357,27 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
   }
 
   const chooseSegment = (id: string) => {
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    if (saveState === 'dirty') void save()
-    setSelectedId(id)
-    setMobilePane('editor')
+    if (id === selectedIdRef.current) {
+      setMobilePane('editor')
+      return
+    }
+    if (segmentSwitchPromise.current) return
+    const pending = (async () => {
+      setSwitchingSegment(true)
+      try {
+        if (!await ensureSaved()) return
+        hydratedSegmentId.current = null
+        selectedIdRef.current = id
+        setSelectedId(id)
+        setMobilePane('editor')
+      } finally {
+        setSwitchingSegment(false)
+      }
+    })()
+    segmentSwitchPromise.current = pending
+    void pending.finally(() => {
+      if (segmentSwitchPromise.current === pending) segmentSwitchPromise.current = null
+    })
   }
 
   const previewAsset = selectionAsset(selected)
@@ -262,16 +400,17 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
             {saveState === 'saving' ? <LoaderCircle size={15} className="spin" /> : saveState === 'error' ? <AlertTriangle size={15} /> : <Check size={15} />}
             {saveState === 'saving' ? '保存中' : saveState === 'dirty' ? '等待保存' : saveState === 'error' ? '保存失败' : '已自动保存'}
           </span>
-          <button type="button" className="button button-secondary button-small" disabled={saveState === 'saving' || saveState === 'idle'} onClick={() => void save()}><Save size={15} /> 保存</button>
+          <button type="button" className="button button-secondary button-small" disabled={saveState !== 'dirty' && saveState !== 'error'} onClick={() => void save()}><Save size={15} /> 保存</button>
         </div>
       </header>
 
       {error && <div className="workbench-banner"><Info size={16} /> {error}<button type="button" onClick={() => void load()}>重新加载</button></div>}
+      {conflict && <div className="workbench-banner conflict-banner"><AlertTriangle size={16} /> 此片段已在其他会话更新，本地草稿尚未覆盖远端版本。<button type="button" onClick={() => void load(false, true)}>放弃草稿并重新加载</button></div>}
 
       <nav className="mobile-workbench-tabs" aria-label="工作台面板">
         <button type="button" className={mobilePane === 'segments' ? 'active' : ''} onClick={() => setMobilePane('segments')}><ListVideo size={17} /> 字幕</button>
         <button type="button" className={mobilePane === 'editor' ? 'active' : ''} onClick={() => setMobilePane('editor')}><TextCursorInput size={17} /> 编辑</button>
-        <button type="button" className={mobilePane === 'matches' ? 'active' : ''} onClick={() => setMobilePane('matches')}><WandSparkles size={17} /> 候选</button>
+        <button type="button" className={mobilePane === 'matches' ? 'active' : ''} onClick={() => setMobilePane('matches')}><Image size={17} /> 候选</button>
       </nav>
 
       <div className="workbench-grid">
@@ -298,8 +437,9 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => onDropSegment(event, index)}
                 >
-                  <button type="button" className="segment-open" onClick={() => chooseSegment(segment.id)}>
+                  <button type="button" className="segment-open" disabled={switchingSegment} onClick={() => chooseSegment(segment.id)}>
                     <span className="segment-index">{String(index + 1).padStart(2, '0')}</span>
+                    <span className="segment-thumb"><AssetVisual asset={selectionAsset(segment)} /></span>
                     <span className="segment-copy"><strong>{segment.topic || `片段 ${index + 1}`}</strong><p>{segment.text}</p><small>{formatDuration(segment.start_ms)}{segment.end_ms != null ? ` – ${formatDuration(segment.end_ms)}` : ''} · {segment.keywords.slice(0, 2).join(' / ') || '等待关键词'}</small></span>
                   </button>
                   <div className="segment-controls">
@@ -320,7 +460,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
               <div className="preview-stage">
                 <div className="preview-toolbar"><span><Image size={15} /> 画面预览</span><span>16:9</span></div>
                 <div className="video-preview">
-                  <AssetVisual asset={previewAsset} className="preview-image" />
+                  <AssetVisual asset={previewAsset} className="preview-image" controls={previewAsset?.kind === 'video'} />
                   <div className="preview-shade" />
                   <div className="subtitle-overlay"><span>{draft.text || '输入字幕内容'}</span></div>
                   <div className="preview-badge">片段 {selectedIndex + 1} / {segments.length}</div>
@@ -329,11 +469,11 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
               </div>
 
               <div className="editor-form">
-                <div className="editor-form-head"><div><span className="editor-index">{String(selectedIndex + 1).padStart(2, '0')}</span><div><h2>编辑内容片段</h2><p>修改后将自动保存，并可重新匹配候选</p></div></div><div className="segment-nav"><button type="button" disabled={selectedIndex <= 0} onClick={() => chooseSegment(segments[selectedIndex - 1].id)}><ChevronLeft size={17} /></button><button type="button" disabled={selectedIndex >= segments.length - 1} onClick={() => chooseSegment(segments[selectedIndex + 1].id)}><ChevronRight size={17} /></button></div></div>
-                <div className="form-field compact-field"><label htmlFor="segment-text">字幕文本</label><textarea id="segment-text" className="segment-textarea" value={draft.text} onChange={(event) => editDraft({ text: event.target.value })} /><small className="field-count">{draft.text.length} 字</small></div>
+                <div className="editor-form-head"><div><span className="editor-index">{String(selectedIndex + 1).padStart(2, '0')}</span><div><h2>编辑内容片段</h2><p>修改后将自动保存，并可重新匹配候选</p></div></div><div className="segment-nav"><button type="button" disabled={switchingSegment || selectedIndex <= 0} onClick={() => chooseSegment(segments[selectedIndex - 1].id)}><ChevronLeft size={17} /></button><button type="button" disabled={switchingSegment || selectedIndex >= segments.length - 1} onClick={() => chooseSegment(segments[selectedIndex + 1].id)}><ChevronRight size={17} /></button></div></div>
+                <div className="form-field compact-field"><label htmlFor="segment-text">字幕文本</label><textarea id="segment-text" className="segment-textarea" value={draft.text} onChange={(event) => editDraft({ text: event.target.value })} onBlur={() => { if (saveState === 'dirty') void save() }} /><small className="field-count">{draft.text.length} 字</small></div>
                 <div className="editor-fields-row">
-                  <div className="form-field compact-field"><label htmlFor="segment-topic">内容主题</label><input id="segment-topic" value={draft.topic} onChange={(event) => editDraft({ topic: event.target.value })} placeholder="例如：人工智能" /></div>
-                  <div className="form-field compact-field"><label htmlFor="segment-keywords">关键词 <span>逗号分隔</span></label><div className="input-with-icon"><Tags size={15} /><input id="segment-keywords" value={draft.keywords} onChange={(event) => editDraft({ keywords: event.target.value })} placeholder="科技，效率，未来" /></div></div>
+                  <div className="form-field compact-field"><label htmlFor="segment-topic">内容主题</label><input id="segment-topic" value={draft.topic} onChange={(event) => editDraft({ topic: event.target.value })} onBlur={() => { if (saveState === 'dirty') void save() }} placeholder="例如：人工智能" /></div>
+                  <div className="form-field compact-field"><label htmlFor="segment-keywords">关键词 <span>逗号分隔</span></label><div className="input-with-icon"><Tags size={15} /><input id="segment-keywords" value={draft.keywords} onChange={(event) => editDraft({ keywords: event.target.value })} onBlur={() => { if (saveState === 'dirty') void save() }} placeholder="科技，效率，未来" /></div></div>
                 </div>
                 <div className="auto-save-note"><Clock3 size={14} /> {saveState === 'dirty' ? '停止输入后自动保存' : saveState === 'saving' ? '正在同步到服务器…' : saveState === 'error' ? '保存失败，请点击上方保存重试' : '编辑内容已同步到服务器'}</div>
               </div>
@@ -343,12 +483,13 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
 
         <aside className={`matches-panel workbench-panel${mobilePane === 'matches' ? ' mobile-active' : ''}`}>
           <div className="matches-head">
-            <div><h2>画面候选</h2><p>混合匹配 · 分数组成可解释</p></div>
+            <div><h2>画面候选</h2><p>先看匹配依据，再决定是否采用</p></div>
             <button type="button" className="icon-button" title="根据当前文本重新匹配" disabled={rematching || !selected} onClick={() => void rematch()}>{rematching ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}</button>
           </div>
           <div className="asset-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材库并替换…" />{query && <button type="button" aria-label="清空搜索" onClick={() => setQuery('')}><X size={15} /></button>}</div>
+          <div className="asset-search-filters"><select aria-label="素材类型" value={searchKind} onChange={(event) => setSearchKind(event.target.value)}><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option></select><input aria-label="素材标签" value={searchTag} onChange={(event) => setSearchTag(event.target.value)} placeholder="按标签筛选" /></div>
 
-          {query ? (
+          {query || searchKind || searchTag ? (
             <div className="search-result-view">
               <div className="result-label"><span>素材库搜索结果</span>{searching && <LoaderCircle className="spin" size={15} />}</div>
               {!searching && searchResults.length === 0 ? <EmptyState icon={<Search size={22} />} title="没有匹配素材" description="换一个关键词，或前往素材库上传新画面。" /> : (
@@ -363,8 +504,9 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
             </div>
           ) : (
             <div className="candidate-list">
+              {(selected?.recommendations || []).length > 0 && (selected?.recommendations || []).length < 3 && <div className="inline-warning"><AlertTriangle size={16} /> 服务端仅返回 {(selected?.recommendations || []).length} 个候选，请重新匹配后再确认画面。</div>}
               {(selected?.recommendations || []).length === 0 ? (
-                <EmptyState icon={<WandSparkles size={24} />} title="暂无画面候选" description="点击右上角重新匹配，生成至少三个可解释候选。" action={<button type="button" className="button button-secondary button-small" onClick={() => void rematch()}>重新匹配</button>} />
+                <EmptyState icon={<Image size={24} />} title="暂无画面候选" description="点击右上角重新匹配，生成至少三个可解释候选。" action={<button type="button" className="button button-secondary button-small" onClick={() => void rematch()}>重新匹配</button>} />
               ) : selected?.recommendations.map((candidate, index) => (
                 <CandidateCard
                   key={candidate.id || candidate.asset.id}
@@ -386,20 +528,21 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
 }
 
 function CandidateCard({ candidate, index, selected, loading, disabled, onSelect }: { candidate: Recommendation; index: number; selected: boolean; loading: boolean; disabled: boolean; onSelect: () => void }) {
-  const [expanded, setExpanded] = useState(index === 0)
+  const [expanded, setExpanded] = useState(false)
   const total = scorePercent(candidate.total_score)
   return (
     <article className={`candidate-card${selected ? ' selected' : ''}`}>
       <div className="candidate-visual">
         <AssetVisual asset={candidate.asset} />
+        {candidate.asset.kind === 'video' && <span className="video-play-badge"><Play size={13} fill="currentColor" /> 视频</span>}
         <span className="rank-badge">#{candidate.rank || index + 1}</span>
-        {selected && <span className="selected-badge"><Check size={13} /> 当前画面</span>}
-        {candidate.is_diversity_filler && <span className="diversity-badge">多样性补位</span>}
+        {selected && <span className="selected-badge"><Check size={13} /> 当前使用</span>}
+        {candidate.is_diversity_filler && <span className="diversity-badge">低相关补位</span>}
       </div>
       <div className="candidate-body">
-        <div className="candidate-title"><div><h3>{candidate.asset.name}</h3><span>{candidate.asset.tags.slice(0, 3).join(' · ')}</span></div><strong>{total}<small>分</small></strong></div>
+        <div className="candidate-title"><div><h3>{candidate.asset.name}</h3><span>{candidate.asset.tags.slice(0, 3).join(' · ')}</span></div><strong><small>匹配度</small>{total}%</strong></div>
         <div className="score-bar"><span style={{ width: `${total}%` }} /></div>
-        <button type="button" className="explain-toggle" onClick={() => setExpanded(!expanded)}><Sparkles size={14} /> 为什么推荐 <ChevronDown size={14} className={expanded ? 'rotated' : ''} /></button>
+        <button type="button" className="explain-toggle" onClick={() => setExpanded(!expanded)}><CircleHelp size={14} /> 匹配依据 <ChevronDown size={14} className={expanded ? 'rotated' : ''} /></button>
         {expanded && (
           <div className="explanation">
             <p>{candidate.explanation || (candidate.is_diversity_filler ? '用于补充画面多样性，相关度相对较低。' : '素材与当前片段的语义和关键词具有较高关联。')}</p>
@@ -412,7 +555,7 @@ function CandidateCard({ candidate, index, selected, loading, disabled, onSelect
           </div>
         )}
         <button type="button" className={`button ${selected ? 'button-selected' : 'button-secondary'} candidate-select`} disabled={disabled || selected} onClick={onSelect}>
-          {loading ? <InlineSpinner label="正在选择" /> : selected ? <><Check size={16} /> 已选择</> : '使用这个画面'}
+          {loading ? <InlineSpinner label="正在选择" /> : selected ? <><Check size={16} /> 当前使用</> : '采用此画面'}
         </button>
       </div>
     </article>
