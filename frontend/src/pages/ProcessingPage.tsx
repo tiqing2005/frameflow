@@ -15,7 +15,7 @@ import {
   Square,
   WandSparkles,
 } from 'lucide-react'
-import { api, ApiError, errorMessage } from '../api'
+import { api, ApiError, errorMessage, isAbortError } from '../api'
 import { ErrorState, formatDate, InlineSpinner, PageLoader, StatusPill, useToast } from '../components/ui'
 import { AppLink, navigate } from '../router'
 import type { JobDetail, JobStage, Project } from '../types'
@@ -119,20 +119,28 @@ export function ProcessingPage({ projectId, initialJobId }: { projectId: string;
   const [errorRequestId, setErrorRequestId] = useState('')
   const [action, setAction] = useState<'retry' | 'cancel' | null>(null)
   const [pollGeneration, setPollGeneration] = useState(0)
+  const [nowTick, setNowTick] = useState(Date.now())
   const timerRef = useRef<number | null>(null)
+  const pollAbort = useRef<AbortController | null>(null)
+  const actionAbort = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
+  const jobIdRef = useRef(initialJobId)
   const toast = useToast()
 
-  const fetchState = useCallback(async (showLoader = false): Promise<string | undefined> => {
+  const fetchState = useCallback(async (showLoader = false, signal?: AbortSignal): Promise<string | undefined> => {
     if (showLoader) setLoading(true)
     try {
-      const detail = await api.project(projectId)
+      const detail = await api.project(projectId, { signal })
+      if (signal?.aborted || !mountedRef.current) return undefined
       setProject(detail.project)
       setError('')
       setErrorRequestId('')
-      const nextJobId = jobId || detail.current_job?.id
+      const nextJobId = jobIdRef.current || detail.current_job?.id
       if (nextJobId) {
+        jobIdRef.current = nextJobId
         setJobId(nextJobId)
-        const nextJob = await api.job(nextJobId)
+        const nextJob = await api.job(nextJobId, { signal })
+        if (signal?.aborted || !mountedRef.current) return undefined
         setJobDetail(nextJob)
         return nextJob.job.status
       } else if (detail.project.status === 'ready') {
@@ -140,25 +148,47 @@ export function ProcessingPage({ projectId, initialJobId }: { projectId: string;
         return 'succeeded'
       }
       setError('')
+      return detail.project.status
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted || !mountedRef.current) return undefined
       setError(errorMessage(err))
       setErrorRequestId(err instanceof ApiError ? err.requestId || '' : '')
       return undefined
     } finally {
-      setLoading(false)
+      if (!signal?.aborted && mountedRef.current) setLoading(false)
     }
-  }, [jobId, projectId])
+  }, [projectId])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      pollAbort.current?.abort()
+      actionAbort.current?.abort()
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
+    let failures = 0
+    let firstPoll = true
     const poll = async () => {
-      const status = await fetchState(true)
-      if (!alive) return
-      if (!status || status === 'queued' || status === 'running') timerRef.current = window.setTimeout(poll, 1400)
+      const controller = new AbortController()
+      pollAbort.current = controller
+      const status = await fetchState(firstPoll, controller.signal)
+      firstPoll = false
+      if (!alive || controller.signal.aborted) return
+      if (!status) failures += 1
+      else failures = 0
+      if (!status || status === 'queued' || status === 'running' || status === 'processing') {
+        const retryDelay = status ? 1400 : Math.min(15_000, 1400 * (2 ** Math.min(failures, 4)))
+        timerRef.current = window.setTimeout(poll, document.hidden ? Math.max(retryDelay, 5000) : retryDelay)
+      }
     }
     void poll()
     return () => {
       alive = false
+      pollAbort.current?.abort()
       if (timerRef.current) window.clearTimeout(timerRef.current)
     }
   }, [fetchState, pollGeneration])
@@ -174,40 +204,57 @@ export function ProcessingPage({ projectId, initialJobId }: { projectId: string;
     && job.retryable === true
     && (job.attempt ?? 0) < (job.max_attempts ?? Number.POSITIVE_INFINITY)
   const guidance = failureGuidance(job?.error_code, canRetry)
+  useEffect(() => {
+    if (!job?.started_at || job.finished_at || job.status !== 'running') return
+    setNowTick(Date.now())
+    const interval = window.setInterval(() => setNowTick(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [job?.finished_at, job?.started_at, job?.status])
   const elapsed = useMemo(() => {
     if (!job?.started_at) return null
-    const end = job.finished_at ? new Date(job.finished_at).getTime() : Date.now()
+    const end = job.finished_at ? new Date(job.finished_at).getTime() : nowTick
     return Math.max(0, Math.round((end - new Date(job.started_at).getTime()) / 1000))
-  }, [job?.finished_at, job?.started_at])
+  }, [job?.finished_at, job?.started_at, nowTick])
 
   const retry = async () => {
     if (!job || action || job.status !== 'failed' || !canRetry) return
+    const controller = new AbortController()
+    actionAbort.current?.abort()
+    actionAbort.current = controller
     setAction('retry')
     try {
-      const result = await api.retryJob(job.id)
+      const result = await api.retryJob(job.id, { signal: controller.signal })
+      if (controller.signal.aborted || !mountedRef.current) return
       const next = result.job
+      jobIdRef.current = next.id
       setJobId(next.id)
       setJobDetail(result)
       setPollGeneration((value) => value + 1)
       toast('原任务已重新进入队列，媒体无需重新上传', 'success')
     } catch (err) {
-      toast(errorMessage(err), 'error')
+      if (!isAbortError(err) && mountedRef.current) toast(errorMessage(err), 'error')
     } finally {
-      setAction(null)
+      if (actionAbort.current === controller) actionAbort.current = null
+      if (mountedRef.current) setAction(null)
     }
   }
 
   const cancel = async () => {
     if (!job || action || !window.confirm('确定取消这次处理吗？已生成的数据会保留。')) return
+    const controller = new AbortController()
+    actionAbort.current?.abort()
+    actionAbort.current = controller
     setAction('cancel')
     try {
-      await api.cancelJob(job.id)
+      await api.cancelJob(job.id, { signal: controller.signal })
+      if (controller.signal.aborted || !mountedRef.current) return
       toast('任务已取消', 'success')
-      await fetchState()
+      await fetchState(false, controller.signal)
     } catch (err) {
-      toast(errorMessage(err), 'error')
+      if (!isAbortError(err) && mountedRef.current) toast(errorMessage(err), 'error')
     } finally {
-      setAction(null)
+      if (actionAbort.current === controller) actionAbort.current = null
+      if (mountedRef.current) setAction(null)
     }
   }
 

@@ -11,13 +11,62 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react'
-import { api, errorMessage } from '../api'
+import { api, errorMessage, isAbortError } from '../api'
 import { AssetVisual, EmptyState, ErrorState, formatDate, InlineSpinner, PageLoader, useToast } from '../components/ui'
 import type { Asset } from '../types'
 
 const ASSET_FILE_PATTERN = /\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i
 const IMAGE_FILE_PATTERN = /\.(png|jpe?g|webp|gif)$/i
 const ASSET_FILE_ACCEPT = '.png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov'
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+
+function useDialogFocus(onClose: () => void, canClose = true) {
+  const dialogRef = useRef<HTMLElement>(null)
+  const closeRef = useRef(onClose)
+  const canCloseRef = useRef(canClose)
+  closeRef.current = onClose
+  canCloseRef.current = canClose
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (!dialog) return
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true')
+    const frame = window.requestAnimationFrame(() => (focusable()[0] || dialog).focus())
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && canCloseRef.current) {
+        event.preventDefault()
+        closeRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const items = focusable()
+      if (items.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', onKeyDown)
+      previousFocus?.focus()
+    }
+  }, [])
+
+  return dialogRef
+}
 
 export function AssetsPage() {
   const [assets, setAssets] = useState<Asset[]>([])
@@ -28,24 +77,35 @@ export function AssetsPage() {
   const [error, setError] = useState('')
   const [uploadOpen, setUploadOpen] = useState(false)
   const [selected, setSelected] = useState<Asset | null>(null)
+  const loadVersion = useRef(0)
+  const loadAbort = useRef<AbortController | null>(null)
 
   const load = useCallback(async () => {
+    const currentLoad = ++loadVersion.current
+    loadAbort.current?.abort()
+    const controller = new AbortController()
+    loadAbort.current = controller
     setLoading(true)
     try {
-      const result = await api.assets({ q: query.trim() || undefined, kind: kind || undefined })
+      const result = await api.assets({ q: query.trim() || undefined, kind: kind || undefined }, { signal: controller.signal })
+      if (controller.signal.aborted || currentLoad !== loadVersion.current) return
       setAssets(result.items)
       setTotal(result.total)
       setError('')
     } catch (err) {
-      setError(errorMessage(err))
+      if (!isAbortError(err) && currentLoad === loadVersion.current) setError(errorMessage(err))
     } finally {
-      setLoading(false)
+      if (currentLoad === loadVersion.current) setLoading(false)
+      if (loadAbort.current === controller) loadAbort.current = null
     }
   }, [kind, query])
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void load() }, query ? 300 : 0)
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      loadAbort.current?.abort()
+    }
   }, [load, query])
 
   return (
@@ -96,6 +156,7 @@ function UploadAssetModal({ onClose, onUploaded }: { onClose: () => void; onUplo
   const [error, setError] = useState('')
   const input = useRef<HTMLInputElement>(null)
   const toast = useToast()
+  const dialogRef = useDialogFocus(onClose, !uploading)
 
   const choose = (next?: File) => {
     if (!next) return
@@ -127,10 +188,10 @@ function UploadAssetModal({ onClose, onUploaded }: { onClose: () => void; onUplo
 
   return (
     <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !uploading) onClose() }}>
-      <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+      <section ref={dialogRef} className="modal-card" role="dialog" aria-modal="true" aria-labelledby="upload-title" tabIndex={-1}>
         <div className="modal-head"><div><span className="modal-icon"><UploadCloud size={20} /></span><div><h2 id="upload-title">上传新素材</h2><p>标签越准确，匹配结果越相关</p></div></div><button className="icon-button" type="button" aria-label="关闭" disabled={uploading} onClick={onClose}><X size={19} /></button></div>
         <div className="modal-body">
-          {!file ? <button type="button" className={`drop-zone asset-drop${dragging ? ' dragging' : ''}`} onClick={() => input.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={drop}><span className="upload-icon"><ImageIcon size={25} /></span><strong>拖放图片或视频，或点击选择</strong><span>PNG、JPG/JPEG、WebP、GIF、MP4、WebM、MOV（不支持 SVG）· 最大 100 MB</span></button> : <div className="upload-preview"><div className="upload-local-preview"><LocalAssetPreview file={file} /></div><div><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB</span></div><button type="button" className="icon-button" onClick={() => setFile(null)}><X size={17} /></button></div>}
+          {!file ? <button type="button" className={`drop-zone asset-drop${dragging ? ' dragging' : ''}`} onClick={() => input.current?.click()} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={drop}><span className="upload-icon"><ImageIcon size={25} /></span><strong>拖放图片或视频，或点击选择</strong><span>PNG、JPG/JPEG、WebP、GIF、MP4、WebM、MOV（不支持 SVG）· 最大 100 MB</span></button> : <div className="upload-preview"><div className="upload-local-preview"><LocalAssetPreview file={file} /></div><div><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB</span></div><button type="button" className="icon-button" aria-label="移除待上传文件" onClick={() => setFile(null)}><X size={17} /></button></div>}
           <input ref={input} hidden type="file" accept={ASSET_FILE_ACCEPT} onChange={(event) => choose(event.target.files?.[0])} />
           <div className="form-field"><label htmlFor="asset-name">素材名称 <span>必填</span></label><input id="asset-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：城市夜间交通" maxLength={80} /></div>
           <div className="form-field"><label htmlFor="asset-tags">主题标签 <span>逗号分隔</span></label><div className="input-with-icon"><Tags size={16} /><input id="asset-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="城市，交通，夜景" /></div></div>
@@ -150,6 +211,7 @@ function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () 
   const [keywords, setKeywords] = useState(asset.keywords.join('，'))
   const [saving, setSaving] = useState(false)
   const toast = useToast()
+  const dialogRef = useDialogFocus(onClose, !saving)
 
   const save = async () => {
     setSaving(true)
@@ -164,15 +226,15 @@ function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () 
   }
 
   return (
-    <div className="drawer-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <aside className="asset-drawer" role="dialog" aria-modal="true" aria-label="素材详情">
-        <div className="drawer-head"><div><span className="eyebrow">素材详情</span><h2>{asset.name}</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={19} /></button></div>
+    <div className="drawer-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
+      <aside ref={dialogRef} className="asset-drawer" role="dialog" aria-modal="true" aria-label="素材详情" tabIndex={-1}>
+        <div className="drawer-head"><div><span className="eyebrow">素材详情</span><h2>{asset.name}</h2></div><button type="button" className="icon-button" aria-label="关闭素材详情" disabled={saving} onClick={onClose}><X size={19} /></button></div>
         <div className="drawer-preview"><AssetVisual asset={asset} contain controls={asset.kind === 'video'} /></div>
         <div className="drawer-body">
           {editing ? <>
-            <div className="form-field"><label>素材名称</label><input value={name} onChange={(event) => setName(event.target.value)} /></div>
-            <div className="form-field"><label>主题标签</label><input value={tags} onChange={(event) => setTags(event.target.value)} /></div>
-            <div className="form-field"><label>关键词</label><textarea value={keywords} onChange={(event) => setKeywords(event.target.value)} /></div>
+            <div className="form-field"><label htmlFor="asset-detail-name">素材名称</label><input id="asset-detail-name" value={name} onChange={(event) => setName(event.target.value)} /></div>
+            <div className="form-field"><label htmlFor="asset-detail-tags">主题标签</label><input id="asset-detail-tags" value={tags} onChange={(event) => setTags(event.target.value)} /></div>
+            <div className="form-field"><label htmlFor="asset-detail-keywords">关键词</label><textarea id="asset-detail-keywords" value={keywords} onChange={(event) => setKeywords(event.target.value)} /></div>
           </> : <>
             <div className="detail-row"><span>类型</span><strong>{asset.kind === 'video' ? '视频' : '图片'}</strong></div>
             <div className="detail-row"><span>尺寸</span><strong>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : '—'}</strong></div>

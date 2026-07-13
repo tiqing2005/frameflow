@@ -33,6 +33,7 @@ export interface Project {
 export interface Job {
   id: string
   project_id: string
+  kind?: 'pipeline' | 'preview' | string
   status: JobStatus
   stage: JobStage | string
   progress: number
@@ -120,6 +121,51 @@ export interface ProjectDetail {
     audit_events?: number
     [key: string]: unknown
   }
+}
+
+export interface TimelineItem {
+  segment_id: string
+  position: number
+  text: string
+  topic?: string | null
+  start_ms?: number | null
+  end_ms?: number | null
+  duration_ms: number
+  asset?: Asset | null
+}
+
+export interface ProjectTimeline {
+  project_id: string
+  input_hash: string
+  segment_count: number
+  duration_ms: number
+  items: TimelineItem[]
+}
+
+export interface PreviewRender {
+  id: string
+  project_id?: string
+  job_id?: string | null
+  input_hash?: string
+  status: JobStatus | string
+  output_url?: string | null
+  duration_ms?: number | null
+  segment_count?: number
+  error_message?: string | null
+  job?: Job | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ProjectPreviewResponse {
+  preview: PreviewRender | null
+  timeline: ProjectTimeline
+}
+
+export interface CreatePreviewResponse {
+  preview: PreviewRender
+  timeline: ProjectTimeline
+  idempotent_replay?: boolean
 }
 
 export interface Dashboard {

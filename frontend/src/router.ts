@@ -1,9 +1,17 @@
 import { createElement, useEffect, useState, type AnchorHTMLAttributes, type MouseEvent } from 'react'
 
 type NavigationGuard = (path: string) => boolean | Promise<boolean>
+type NavigationOptions = { replace?: boolean }
+interface NavigationFlight { path: string; promise: Promise<boolean> }
+interface QueuedNavigation extends NavigationFlight {
+  options?: NavigationOptions
+  resolve: (value: boolean) => void
+  reject: (reason?: unknown) => void
+}
 
 const navigationGuards = new Set<NavigationGuard>()
-let navigationInFlight: Promise<boolean> | null = null
+let navigationInFlight: NavigationFlight | null = null
+let queuedNavigation: QueuedNavigation | null = null
 const routeChangeEvent = 'frameflow:route-change'
 
 const currentPath = () => `${window.location.pathname}${window.location.search}${window.location.hash}`
@@ -50,19 +58,40 @@ export function addNavigationGuard(guard: NavigationGuard) {
   }
 }
 
-export function navigate(path: string, options?: { replace?: boolean }): Promise<boolean> {
-  if (navigationInFlight) return navigationInFlight
+function startNavigation(path: string, options?: NavigationOptions): Promise<boolean> {
   const pending = (async () => {
     if (!await canNavigate(path)) return false
     window.history[options?.replace ? 'replaceState' : 'pushState']({}, '', path)
     window.dispatchEvent(new Event(routeChangeEvent))
     return true
   })()
-  navigationInFlight = pending
-  void pending.finally(() => {
-    if (navigationInFlight === pending) navigationInFlight = null
-  })
+  const flight = { path, promise: pending }
+  navigationInFlight = flight
+  const continueQueue = () => {
+    if (navigationInFlight !== flight) return
+    navigationInFlight = null
+    const next = queuedNavigation
+    queuedNavigation = null
+    if (!next) return
+    startNavigation(next.path, next.options).then(next.resolve, next.reject)
+  }
+  void pending.then(continueQueue, continueQueue)
   return pending
+}
+
+export function navigate(path: string, options?: NavigationOptions): Promise<boolean> {
+  if (!navigationInFlight) return startNavigation(path, options)
+  if (navigationInFlight.path === path) return navigationInFlight.promise
+  if (queuedNavigation?.path === path) return queuedNavigation.promise
+  queuedNavigation?.resolve(false)
+  let resolve!: (value: boolean) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<boolean>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  queuedNavigation = { path, options, promise, resolve, reject }
+  return promise
 }
 
 export function useRoute() {
@@ -78,6 +107,7 @@ export function useRoute() {
       if (targetPath === activePath) return
       if (navigationInFlight) {
         window.history.pushState({}, '', activePath)
+        void navigate(targetPath, { replace: true })
         return
       }
       const pending = (async () => {
@@ -89,10 +119,16 @@ export function useRoute() {
         setRoute(parseLocation())
         return true
       })()
-      navigationInFlight = pending
-      void pending.finally(() => {
-        if (navigationInFlight === pending) navigationInFlight = null
-      })
+      const flight = { path: targetPath, promise: pending }
+      navigationInFlight = flight
+      const finish = () => {
+        if (navigationInFlight !== flight) return
+        navigationInFlight = null
+        const next = queuedNavigation
+        queuedNavigation = null
+        if (next) startNavigation(next.path, next.options).then(next.resolve, next.reject)
+      }
+      void pending.then(finish, finish)
     }
     window.addEventListener(routeChangeEvent, onChange)
     window.addEventListener('popstate', onPopState)

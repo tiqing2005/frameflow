@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   Asset,
   AuditEvent,
+  CreatePreviewResponse,
   CreateProjectResponse,
   Dashboard,
   FaultResponse,
@@ -9,11 +10,20 @@ import type {
   Paged,
   Project,
   ProjectDetail,
+  ProjectPreviewResponse,
+  ProjectTimeline,
   Run,
   Segment,
 } from './types'
 
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
+const DEFAULT_REQUEST_TIMEOUT = 15_000
+const UPLOAD_REQUEST_TIMEOUT = 120_000
+
+export interface ApiCallOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
 
 export class ApiError extends Error {
   status: number
@@ -33,24 +43,45 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, options: ApiCallOptions = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
   headers.set('Accept', 'application/json')
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers })
-  if (!response.ok) {
-    let body: Partial<ApiErrorBody> = {}
-    try {
-      body = await response.json() as Partial<ApiErrorBody>
-    } catch {
-      body = { message: response.statusText }
+  const controller = new AbortController()
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT
+  const abortFromCaller = () => controller.abort(options.signal?.reason)
+  if (options.signal?.aborted) abortFromCaller()
+  else options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timeout = window.setTimeout(() => controller.abort('timeout'), timeoutMs)
+
+  try {
+    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal })
+    if (!response.ok) {
+      let body: Partial<ApiErrorBody> = {}
+      try {
+        body = await response.json() as Partial<ApiErrorBody>
+      } catch {
+        body = { message: response.statusText }
+      }
+      throw new ApiError(response.status, body)
     }
-    throw new ApiError(response.status, body)
+    if (response.status === 204) return undefined as T
+    return response.json() as Promise<T>
+  } catch (error) {
+    if (controller.signal.aborted && !options.signal?.aborted && controller.signal.reason === 'timeout') {
+      throw new ApiError(408, {
+        code: 'REQUEST_TIMEOUT',
+        message: `请求超过 ${Math.round(timeoutMs / 1000)} 秒未响应，请稍后重试`,
+        retryable: true,
+      })
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromCaller)
   }
-  if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
 }
 
 const query = (params: Record<string, string | undefined>) => {
@@ -61,17 +92,17 @@ const query = (params: Record<string, string | undefined>) => {
 }
 
 export const api = {
-  dashboard: () => request<Dashboard>('/dashboard'),
-  projects: () => request<Paged<Project> | Project[]>('/projects').then((data) =>
+  dashboard: (options?: ApiCallOptions) => request<Dashboard>('/dashboard', {}, options),
+  projects: (options?: ApiCallOptions) => request<Paged<Project> | Project[]>('/projects', {}, options).then((data) =>
     Array.isArray(data) ? { items: data, total: data.length } : data,
   ),
-  createTextProject: (title: string, text: string, idempotencyKey: string) =>
+  createTextProject: (title: string, text: string, idempotencyKey: string, options?: ApiCallOptions) =>
     request<CreateProjectResponse>('/projects/text', {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify({ title, text }),
-    }),
-  createUploadProject: (title: string, file: File, idempotencyKey: string) => {
+    }, options),
+  createUploadProject: (title: string, file: File, idempotencyKey: string, options?: ApiCallOptions) => {
     const form = new FormData()
     form.append('title', title)
     form.append('file', file)
@@ -79,57 +110,79 @@ export const api = {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },
       body: form,
-    })
+    }, { timeoutMs: UPLOAD_REQUEST_TIMEOUT, ...options })
   },
-  project: (id: string) => request<ProjectDetail>(`/projects/${encodeURIComponent(id)}`),
-  deleteProject: (id: string) => request<void>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  job: (id: string) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}`),
-  retryJob: (id: string) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
-  cancelJob: (id: string) => request<JobDetail | { job: JobDetail['job'] }>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
-  updateSegment: (id: string, changes: Partial<Pick<Segment, 'text' | 'topic' | 'keywords'>> & { version: number }) =>
-    request<Segment>(`/segments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }),
-  reorderSegments: (projectId: string, segmentIds: string[]) =>
+  project: (id: string, options?: ApiCallOptions) => request<ProjectDetail>(`/projects/${encodeURIComponent(id)}`, {}, options),
+  projectTimeline: (id: string, options?: ApiCallOptions) => request<ProjectTimeline>(`/projects/${encodeURIComponent(id)}/timeline`, {}, options),
+  projectPreview: (id: string, options?: ApiCallOptions) => request<ProjectPreviewResponse>(`/projects/${encodeURIComponent(id)}/preview`, {}, options),
+  createProjectPreview: (id: string, force = false, options?: ApiCallOptions) => request<CreatePreviewResponse>(`/projects/${encodeURIComponent(id)}/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ force }),
+  }, options),
+  deleteProject: (id: string, options?: ApiCallOptions) => request<void>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }, options),
+  job: (id: string, options?: ApiCallOptions) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}`, {}, options),
+  retryJob: (id: string, options?: ApiCallOptions) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }, options),
+  cancelJob: (id: string, options?: ApiCallOptions) => request<JobDetail | { job: JobDetail['job'] }>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }, options),
+  updateSegment: (id: string, changes: Partial<Pick<Segment, 'text' | 'topic' | 'keywords'>> & { version: number }, options?: ApiCallOptions) =>
+    request<Segment>(`/segments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }, options),
+  reorderSegments: (projectId: string, segmentIds: string[], options?: ApiCallOptions) =>
     request<{ segments?: Segment[] } | Segment[]>(`/projects/${encodeURIComponent(projectId)}/segments/order`, {
       method: 'PUT',
       body: JSON.stringify({ segment_ids: segmentIds }),
-    }),
-  rematchSegment: (id: string) => request<Segment | { segment: Segment }>(`/segments/${encodeURIComponent(id)}/rematch`, { method: 'POST' }),
-  selectAsset: (segmentId: string, assetId: string) =>
+    }, options),
+  rematchSegment: (id: string, options?: ApiCallOptions) => request<Segment | { segment: Segment }>(`/segments/${encodeURIComponent(id)}/rematch`, { method: 'POST' }, options),
+  selectAsset: (segmentId: string, assetId: string, options?: ApiCallOptions) =>
     request<Segment | { selection: Segment['selection'] }>(`/segments/${encodeURIComponent(segmentId)}/selection`, {
       method: 'PUT',
       body: JSON.stringify({ asset_id: assetId }),
-    }),
-  assets: (params: { q?: string; kind?: string; tag?: string } = {}) =>
-    request<Paged<Asset> | Asset[]>(`/assets${query(params)}`).then((data) =>
+    }, options),
+  assets: (params: { q?: string; kind?: string; tag?: string } = {}, options?: ApiCallOptions) =>
+    request<Paged<Asset> | Asset[]>(`/assets${query(params)}`, {}, options).then((data) =>
       Array.isArray(data) ? { items: data, total: data.length } : data,
     ),
-  uploadAsset: (file: File, name: string, tags: string[], keywords: string[]) => {
+  uploadAsset: (file: File, name: string, tags: string[], keywords: string[], options?: ApiCallOptions) => {
     const form = new FormData()
     form.append('file', file)
     form.append('name', name)
     form.append('tags', tags.join(','))
     form.append('keywords', keywords.join(','))
-    return request<Asset>('/assets', { method: 'POST', body: form })
+    return request<Asset>('/assets', { method: 'POST', body: form }, { timeoutMs: UPLOAD_REQUEST_TIMEOUT, ...options })
   },
-  updateAsset: (id: string, changes: Partial<Asset>) =>
-    request<Asset>(`/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }),
-  runs: () => request<Paged<Run> | Run[]>('/runs').then((data) =>
+  updateAsset: (id: string, changes: Partial<Asset>, options?: ApiCallOptions) =>
+    request<Asset>(`/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }, options),
+  runs: (options?: ApiCallOptions) => request<Paged<Run> | Run[]>('/runs', {}, options).then((data) =>
     Array.isArray(data) ? { items: data, total: data.length } : data,
   ),
-  audit: (projectId?: string) =>
-    request<Paged<AuditEvent> | AuditEvent[]>(`/audit${query({ project_id: projectId })}`).then((data) =>
+  audit: (projectId?: string, options?: ApiCallOptions) =>
+    request<Paged<AuditEvent> | AuditEvent[]>(`/audit${query({ project_id: projectId })}`, {}, options).then((data) =>
       Array.isArray(data) ? { items: data, total: data.length } : data,
     ),
-  setNextFault: (mode: 'ai_degrade' | 'job_fail' | 'none') =>
-    request<FaultResponse>('/demo/faults/next', { method: 'POST', body: JSON.stringify({ mode }) }),
+  setNextFault: (mode: 'ai_degrade' | 'job_fail' | 'none', options?: ApiCallOptions) =>
+    request<FaultResponse>('/demo/faults/next', { method: 'POST', body: JSON.stringify({ mode }) }, options),
 }
 
-export function assetUrl(asset?: Asset | null) {
-  if (!asset) return ''
-  const value = asset.thumbnail_url || asset.file_url || asset.url || ''
+export function mediaUrl(value?: string | null) {
   if (!value) return ''
   if (/^(https?:|data:|blob:)/.test(value)) return value
   return value.startsWith('/') ? value : `/${value}`
+}
+
+export function assetFileUrl(asset?: Asset | null) {
+  if (!asset) return ''
+  return mediaUrl(asset.file_url || asset.url || asset.thumbnail_url)
+}
+
+export function assetPosterUrl(asset?: Asset | null) {
+  if (!asset) return ''
+  return mediaUrl(asset.thumbnail_url || (asset.kind === 'image' ? asset.file_url || asset.url : ''))
+}
+
+export function assetUrl(asset?: Asset | null) {
+  return asset?.kind === 'video' ? assetFileUrl(asset) : assetPosterUrl(asset) || assetFileUrl(asset)
+}
+
+export function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 export function errorMessage(error: unknown) {

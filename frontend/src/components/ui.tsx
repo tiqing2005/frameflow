@@ -9,7 +9,7 @@ import {
   LoaderCircle,
   X,
 } from 'lucide-react'
-import { assetUrl } from '../api'
+import { assetFileUrl, assetPosterUrl } from '../api'
 import type { Asset, JobStatus, ProjectStatus } from '../types'
 
 type ToastTone = 'success' | 'error' | 'info'
@@ -100,15 +100,16 @@ export function EmptyState({ icon, title, description, action }: { icon?: ReactN
   )
 }
 
-export function AssetVisual({ asset, className = '', alt, contain = false, controls = false }: { asset?: Asset | null; className?: string; alt?: string; contain?: boolean; controls?: boolean }) {
+export function AssetVisual({ asset, className = '', alt, contain = false, controls = false, eager = false }: { asset?: Asset | null; className?: string; alt?: string; contain?: boolean; controls?: boolean; eager?: boolean }) {
   const [failed, setFailed] = useState(false)
-  const url = assetUrl(asset)
+  const url = asset?.kind === 'video' ? assetFileUrl(asset) : assetPosterUrl(asset) || assetFileUrl(asset)
+  const poster = asset?.kind === 'video' ? assetPosterUrl(asset) : ''
   useEffect(() => setFailed(false), [url])
   if (url && !failed) {
     if (asset?.kind === 'video') {
-      return <video className={`${className} asset-video`.trim()} src={url} aria-label={alt || asset.name || '视频素材预览'} controls={controls} muted={!controls} playsInline preload="metadata" onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
+      return <video className={`${className} asset-video`.trim()} src={url} poster={poster || undefined} aria-label={alt || asset.name || '视频素材预览'} controls={controls} muted={!controls} playsInline preload={controls || eager ? 'metadata' : 'none'} onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
     }
-    return <img className={className} src={url} alt={alt || asset?.name || '素材预览'} onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
+    return <img className={className} src={url} alt={alt || asset?.name || '素材预览'} loading={eager ? 'eager' : 'lazy'} decoding="async" onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
   }
   return (
     <div className={`asset-fallback ${className}`} role="img" aria-label={alt || asset?.name || '素材占位'}>
