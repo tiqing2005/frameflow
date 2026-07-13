@@ -1,0 +1,75 @@
+name: frameflow
+
+services:
+  frameflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_LOCAL_ASR: ${INSTALL_LOCAL_ASR:-false}
+        VITE_API_BASE_URL: /api/v1
+    image: frameflow:${FRAMEFLOW_TAG:-latest}
+    restart: unless-stopped
+    env_file:
+      - ${FRAMEFLOW_ENV_FILE:-deploy/.env}
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      FRAMEFLOW_DATA_DIR: /data
+      FRAMEFLOW_DATABASE_URL: sqlite:////data/frameflow.db
+      FRAMEFLOW_FRONTEND_DIR: /app/frontend
+      HF_HOME: /data/models/huggingface
+      LLM_PROVIDER: ${LLM_PROVIDER:-rules}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-20}
+    expose:
+      - "8000"
+    volumes:
+      - frameflow_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?请在 deploy/.env 设置 DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?请在 deploy/.env 设置 ACME_EMAIL}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-frameflow}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
+    depends_on:
+      frameflow:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy:/etc/caddy/conf.d:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+
+networks:
+  edge:
+    driver: bridge
+
+volumes:
+  frameflow_data:
+    name: ${DATA_VOLUME_NAME:-frameflow_data}
+  caddy_data:
+    name: ${CADDY_DATA_VOLUME_NAME:-frameflow_caddy_data}
+  caddy_config:
+    name: ${CADDY_CONFIG_VOLUME_NAME:-frameflow_caddy_config}

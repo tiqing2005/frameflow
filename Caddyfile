@@ -1,0 +1,30 @@
+{
+	admin off
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	# 默认目录只有空的占位片段，不启用鉴权。复制 auth 示例后即可保护整站。
+	import /etc/caddy/conf.d/*.caddy
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+		-Server
+	}
+
+	reverse_proxy frameflow:8000 {
+		health_uri /health/live
+		health_interval 30s
+		health_timeout 3s
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,2 @@
+*.caddy
+!00-default.caddy
