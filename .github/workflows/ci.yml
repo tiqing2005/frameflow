@@ -1,0 +1,129 @@
+name: FrameFlow CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frameflow-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install backend test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Run backend tests
+        env:
+          FRAMEFLOW_DATA_DIR: ${{ runner.temp }}/frameflow-pytest
+          FRAMEFLOW_STAGE_DELAY_SECONDS: "0"
+        run: python -m pytest
+
+  frontend:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        env:
+          VITE_API_BASE_URL: /api/v1
+        run: npm run build
+
+  contract-smoke:
+    name: API + durable worker contract smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install runtime dependencies
+        working-directory: backend
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Start API and worker, then run the public contract script
+        env:
+          FRAMEFLOW_DATA_DIR: ${{ runner.temp }}/frameflow-smoke
+          FRAMEFLOW_DATABASE_URL: sqlite:///${{ runner.temp }}/frameflow-smoke/frameflow.db
+          FRAMEFLOW_STAGE_DELAY_SECONDS: "0.02"
+          FRAMEFLOW_WORKER_POLL_SECONDS: "0.05"
+          FRAMEFLOW_JOB_LEASE_SECONDS: "15"
+          FRAMEFLOW_CORS_ORIGINS: http://127.0.0.1:5173
+          FRAMEFLOW_ACCEPTANCE_TIMEOUT: "60"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$FRAMEFLOW_DATA_DIR"
+          (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000) >api.log 2>&1 &
+          api_pid=$!
+          (cd backend && python -m app.worker) >worker.log 2>&1 &
+          worker_pid=$!
+          cleanup() {
+            kill "$api_pid" "$worker_pid" 2>/dev/null || true
+            wait "$api_pid" "$worker_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 80); do
+            if curl --silent --fail http://127.0.0.1:8000/health/ready >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$api_pid" 2>/dev/null || ! kill -0 "$worker_pid" 2>/dev/null; then
+              echo "API or worker exited before readiness" >&2
+              sed -n '1,200p' api.log >&2 || true
+              sed -n '1,200p' worker.log >&2 || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+          curl --silent --fail http://127.0.0.1:8000/health/ready >/dev/null || {
+            echo "Readiness timeout" >&2
+            sed -n '1,200p' api.log >&2 || true
+            sed -n '1,200p' worker.log >&2 || true
+            exit 1
+          }
+          bash scripts/acceptance.sh http://127.0.0.1:8000
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frameflow-smoke-logs
+          path: |
+            api.log
+            worker.log
+          if-no-files-found: ignore
+          retention-days: 7
