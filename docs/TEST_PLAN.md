@@ -174,6 +174,8 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | API-13 | 素材上传 | 真实写文件与 DB，随机存储名，公开 URL 可读 |
 | API-14 | 非法/超限上传 | 4xx + 统一错误，不留孤儿 DB 记录/部分文件 |
 | API-15 | 项目删除 | 从属项目数据清理，全局 Asset 保留 |
+| API-16 | 运行记录 Token 序列化 | 新记录与历史 `output_summary.tokens` 均只对外返回顶层 `input_tokens/output_tokens/total_tokens`，不返回同义并行字段 |
+| API-17 | 无 Token 运行记录 | 规则任务或 Provider 未报告用量时三个 Token 字段为 `null`，不得序列化成伪造的 `0` |
 
 ### 6.3 故障、重试和恢复
 
@@ -187,6 +189,13 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | FAIL-06 | Worker 崩溃恢复 | 租约过期后可重排/续处理，结果不重复 |
 | FAIL-07 | API 重启持久化 | 重启后项目/任务/编辑/选择/事件仍可读 |
 | FAIL-08 | 无本地 ASR/无 Key | 媒体任务显式 `ASR_*` 配置/依赖错误，不生成假字幕 |
+
+### 6.4 前端运行记录统计
+
+| ID | 用例 | 通过标准 |
+| --- | --- | --- |
+| UI-RUN-01 | Token 总计 | 仅累计各运行非空的 `total_tokens`，不重复相加输入/输出或读取历史嵌套字段 |
+| UI-RUN-02 | Token 详情 | 有用量时显示规范输入/输出/总计；三个字段为 `null` 时显示“—”或“未产生 Token”，不显示为真实 `0` |
 
 ## 7. Worker 恢复手工演练
 

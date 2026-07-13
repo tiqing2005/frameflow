@@ -144,12 +144,13 @@
 
 ```json
 {
-  "code": "VERSION_CONFLICT",
+  "code": "SEGMENT_VERSION_CONFLICT",
   "message": "字幕片段已被其他操作更新，请重新加载",
   "retryable": false,
   "request_id": "req_01...",
   "details": {
-    "current_version": 3
+    "expected": 3,
+    "received": 2
   }
 }
 ```
@@ -158,7 +159,7 @@
 | ---: | --- | --- |
 | 400 | `INVALID_INPUT`, `INVALID_FILE_TYPE` | 请求语义/文件不合法 |
 | 404 | `PROJECT_NOT_FOUND`, `JOB_NOT_FOUND`, `ASSET_NOT_FOUND` | 资源不存在 |
-| 409 | `VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 版本、幂等请求或状态迁移冲突 |
+| 409 | `SEGMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 版本、幂等请求或状态迁移冲突 |
 | 413 | `UPLOAD_TOO_LARGE` | 超过服务端上传限制 |
 | 422 | `VALIDATION_ERROR` | Pydantic 字段校验失败，仍尽量包装为统一格式 |
 | 500 | `INTERNAL_ERROR` | 未预期服务端错误，不返回堆栈 |
@@ -178,13 +179,22 @@
 
 ### GET `/health/ready`
 
-检查数据库与必要运行依赖；实现可附带 Worker 心跳摘要。
+检查数据库、种子素材与 Worker 心跳。
 
 ```json
 {
   "status": "ready",
-  "database": "ok",
-  "worker": "ok"
+  "checks": {
+    "database": "ok",
+    "seed_assets": {
+      "ok": true,
+      "count": 12
+    },
+    "worker": {
+      "online": true,
+      "last_heartbeat": "2026-07-13T08:30:00Z"
+    }
+  }
 }
 ```
 
@@ -324,7 +334,7 @@ Body：
 }
 ```
 
-- `version` 必填；与当前版本不同返回 409 `VERSION_CONFLICT`。
+- `version` 必填；与当前版本不同返回 409 `SEGMENT_VERSION_CONFLICT`。
 - `text/topic/keywords` 至少提供一个。
 - 关键词清理空值、不区分大小写去重，最多 20 个，单项最多 60 字符。
 - 成功返回更新后 Segment，`version + 1`，写入 AuditEvent。
@@ -414,11 +424,27 @@ Body：
   "status": "succeeded",
   "degraded": false,
   "latency_ms": 41,
+  "input_tokens": null,
+  "output_tokens": null,
+  "total_tokens": null,
   "created_at": "2026-07-13T08:30:03Z"
 }
 ```
 
 默认运行时必须如实显示 `rules` / deterministic strategy，不伪造外部模型名。
+
+Token 用量只使用以下三个顶层字段作为公开 API 契约：
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| `input_tokens` | `integer \| null` | Provider 报告的输入 Token 数 |
+| `output_tokens` | `integer \| null` | Provider 报告的输出 Token 数 |
+| `total_tokens` | `integer \| null` | Provider 报告的总 Token 数；Provider 未单独报告时可由前两项相加得到 |
+
+- 产生 Token 的模型调用返回非负整数；规则任务、Worker 失败记录或 Provider 未报告用量时，三个字段返回 `null`，不能用 `0` 表示“没有 Token 数据”。真实的零用量只有在 Provider 明确报告 `0` 时才返回 `0`。
+- 客户端统计只累计 `total_tokens` 非空的运行；详情对 `null` 显示“—”或“未产生 Token”。
+- 历史记录可能把相同结构存放在内部持久化字段 `output_summary.tokens`。服务端仅在读取旧记录时兼容该结构，并将其规范化为上述三个顶层字段；`output_summary.tokens` 不是公开响应字段，也不会作为并行 Token 契约继续维护。
+- API 不定义 `prompt_tokens`、`completion_tokens`、`tokens` 等同义字段。Provider 原始命名应在服务端适配层完成映射，客户端不得依赖这些名称。
 
 ### GET `/api/v1/audit?project_id=`
 
