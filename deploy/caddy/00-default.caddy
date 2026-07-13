@@ -1,2 +1,2 @@
-# 默认不启用访问控制，但阻止公开演示站被搜索引擎索引。
+# 基础片段阻止演示站被索引；访问控制由本地 10-basic-auth.caddy 管理。
 header X-Robots-Tag "noindex, nofollow, noarchive"

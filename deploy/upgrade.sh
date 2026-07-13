@@ -26,7 +26,7 @@ fi
 printf '构建新镜像……\n'
 compose build --pull
 printf '创建一致性备份……\n'
-if ! KEEP_STOPPED=1 "$SCRIPT_DIR/backup.sh"; then
+if ! KEEP_STOPPED=1 bash "$SCRIPT_DIR/backup.sh"; then
   compose start frameflow >/dev/null 2>&1 || true
   die "升级前备份失败，旧版本已尝试重新启动"
 fi

@@ -7,23 +7,57 @@ services:
       dockerfile: Dockerfile
       args:
         INSTALL_LOCAL_ASR: ${INSTALL_LOCAL_ASR:-false}
+        INSTALL_LOCAL_EMBEDDINGS: ${INSTALL_LOCAL_EMBEDDINGS:-false}
         VITE_API_BASE_URL: /api/v1
     image: frameflow:${FRAMEFLOW_TAG:-latest}
     restart: unless-stopped
-    env_file:
-      - ${FRAMEFLOW_ENV_FILE:-deploy/.env}
     environment:
       HOST: 0.0.0.0
       PORT: 8000
       FRAMEFLOW_DATA_DIR: /data
       FRAMEFLOW_DATABASE_URL: sqlite:////data/frameflow.db
       FRAMEFLOW_FRONTEND_DIR: /app/frontend
+      HOME: /data/home/frameflow
+      XDG_CACHE_HOME: /data/cache
+      TMPDIR: /tmp
+      FRAMEFLOW_CORS_ORIGINS: ${FRAMEFLOW_CORS_ORIGINS:-}
+      FRAMEFLOW_MAX_UPLOAD_MB: ${FRAMEFLOW_MAX_UPLOAD_MB:-100}
+      FRAMEFLOW_MAX_SUBTITLE_CHARS: ${FRAMEFLOW_MAX_SUBTITLE_CHARS:-200000}
+      FRAMEFLOW_READ_RATE_LIMIT_PER_MINUTE: ${FRAMEFLOW_READ_RATE_LIMIT_PER_MINUTE:-240}
+      FRAMEFLOW_WRITE_RATE_LIMIT_PER_MINUTE: ${FRAMEFLOW_WRITE_RATE_LIMIT_PER_MINUTE:-60}
+      FRAMEFLOW_WORKER_POLL_SECONDS: ${FRAMEFLOW_WORKER_POLL_SECONDS:-0.75}
+      FRAMEFLOW_STAGE_DELAY_SECONDS: ${FRAMEFLOW_STAGE_DELAY_SECONDS:-0.18}
+      FRAMEFLOW_JOB_LEASE_SECONDS: ${FRAMEFLOW_JOB_LEASE_SECONDS:-300}
+      FRAMEFLOW_JOB_MAX_EXECUTION_SECONDS: ${FRAMEFLOW_JOB_MAX_EXECUTION_SECONDS:-1800}
+      FRAMEFLOW_PREVIEW_TIMEOUT: ${FRAMEFLOW_PREVIEW_TIMEOUT:-300}
+      FRAMEFLOW_PREVIEW_MAX_SECONDS: ${FRAMEFLOW_PREVIEW_MAX_SECONDS:-180}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       HF_HOME: /data/models/huggingface
       LLM_PROVIDER: ${LLM_PROVIDER:-rules}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-20}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FRAMEFLOW_OPENAI_BASE_URL: ${FRAMEFLOW_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      FRAMEFLOW_ASR_MODEL: ${FRAMEFLOW_ASR_MODEL:-gpt-4o-mini-transcribe}
+      FRAMEFLOW_ASR_PROVIDER: ${FRAMEFLOW_ASR_PROVIDER:-auto}
+      FRAMEFLOW_ASR_TIMEOUT: ${FRAMEFLOW_ASR_TIMEOUT:-120}
+      FRAMEFLOW_LOCAL_ASR_TIMEOUT: ${FRAMEFLOW_LOCAL_ASR_TIMEOUT:-600}
+      FRAMEFLOW_WHISPER_MODEL: ${FRAMEFLOW_WHISPER_MODEL:-tiny}
+      FRAMEFLOW_WHISPER_DEVICE: ${FRAMEFLOW_WHISPER_DEVICE:-cpu}
+      FRAMEFLOW_WHISPER_COMPUTE_TYPE: ${FRAMEFLOW_WHISPER_COMPUTE_TYPE:-int8}
+      FRAMEFLOW_WHISPER_DOWNLOAD_ROOT: /data/models/whisper
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-auto}
+      FRAMEFLOW_EMBEDDING_MODEL: ${FRAMEFLOW_EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      FRAMEFLOW_EMBEDDING_BASE_URL: ${FRAMEFLOW_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      FRAMEFLOW_EMBEDDING_API_KEY: ${FRAMEFLOW_EMBEDDING_API_KEY:-}
+      FRAMEFLOW_EMBEDDING_TIMEOUT: ${FRAMEFLOW_EMBEDDING_TIMEOUT:-30}
+      FRAMEFLOW_EMBEDDING_DEVICE: ${FRAMEFLOW_EMBEDDING_DEVICE:-cpu}
+      IMAGE_API_BASE_URL: ${IMAGE_API_BASE_URL:-}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
+      IMAGE_MODEL: ${IMAGE_MODEL:-}
     expose:
       - "8000"
     volumes:
@@ -34,8 +68,22 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=${FRAMEFLOW_TMPFS_SIZE:-256m}
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    pids_limit: ${FRAMEFLOW_PIDS_LIMIT:-256}
+    cpus: ${FRAMEFLOW_CPUS:-2.0}
+    mem_limit: ${FRAMEFLOW_MEMORY_LIMIT:-3g}
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${FRAMEFLOW_LOG_MAX_SIZE:-10m}
+        max-file: ${FRAMEFLOW_LOG_MAX_FILES:-3}
     networks:
       - edge
 
@@ -47,6 +95,7 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:?请在 deploy/.env 设置 ACME_EMAIL}
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:-frameflow}
       BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
+      CADDY_MAX_REQUEST_BODY: ${CADDY_MAX_REQUEST_BODY:-110MB}
     depends_on:
       frameflow:
         condition: service_healthy
@@ -59,6 +108,24 @@ services:
       - ./deploy/caddy:/etc/caddy/conf.d:ro
       - caddy_data:/data
       - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: ${CADDY_PIDS_LIMIT:-128}
+    cpus: ${CADDY_CPUS:-0.50}
+    mem_limit: ${CADDY_MEMORY_LIMIT:-256m}
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${CADDY_LOG_MAX_SIZE:-10m}
+        max-file: ${CADDY_LOG_MAX_FILES:-3}
     networks:
       - edge
 

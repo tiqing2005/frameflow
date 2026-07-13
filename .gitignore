@@ -22,6 +22,8 @@ test-results/
 .playwright-cli/
 /output/
 tmp/
+.zcode/
+backups/
 
 # Runtime data
 data/
@@ -52,3 +54,4 @@ Thumbs.db
 
 # Local launcher state
 .frameflow-run.json
+deploy/caddy/10-basic-auth.caddy

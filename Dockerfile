@@ -15,6 +15,7 @@ RUN npm run build
 FROM python:3.12-slim AS runtime
 
 ARG INSTALL_LOCAL_ASR=false
+ARG INSTALL_LOCAL_EMBEDDINGS=false
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -25,14 +26,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/data/models/huggingface
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg tini \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-noto-cjk tini \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY backend/requirements.txt backend/requirements-asr-local.txt ./
+COPY backend/requirements.txt backend/requirements-asr-local.txt backend/requirements-embeddings-local.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt \
-    && if [ "${INSTALL_LOCAL_ASR}" = "true" ]; then pip install -r requirements-asr-local.txt; fi
+    && if [ "${INSTALL_LOCAL_ASR}" = "true" ]; then pip install -r requirements-asr-local.txt; fi \
+    && if [ "${INSTALL_LOCAL_EMBEDDINGS}" = "true" ]; then pip install -r requirements-embeddings-local.txt; fi
 
 COPY backend/app ./app
 COPY backend/seed_media ./seed_media
@@ -45,6 +47,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin frameflow \
 USER frameflow
 EXPOSE 8000
 VOLUME ["/data"]
+STOPSIGNAL SIGTERM
 
 HEALTHCHECK --interval=20s --timeout=4s --start-period=30s --retries=5 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]

@@ -5,15 +5,25 @@
 
 {$DOMAIN} {
 	encode zstd gzip
-	# 默认目录只有空的占位片段，不启用鉴权。复制 auth 示例后即可保护整站。
+	# first-deploy 默认生成 10-basic-auth.caddy；仅可信内网可显式关闭。
 	import /etc/caddy/conf.d/*.caddy
+
+	# 比应用上传上限略大，为 multipart 边界和字段预留空间。
+	request_body {
+		max_size {$CADDY_MAX_REQUEST_BODY:110MB}
+	}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
+		X-Permitted-Cross-Domain-Policies "none"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		# jsDelivr/FastAPI 域名仅用于当前 /docs 与 /redoc 的官方静态资源。
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self' data: https://cdn.jsdelivr.net; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https://fastapi.tiangolo.com; media-src 'self' blob:; object-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
 		-Server
 	}
 

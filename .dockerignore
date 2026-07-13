@@ -28,6 +28,9 @@ test-results
 output
 tmp
 work
+backups
+.zcode
+deploy/caddy/10-basic-auth.caddy
 *.log
 *.db
 *.db-shm

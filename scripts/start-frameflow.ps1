@@ -216,9 +216,18 @@ try {
         }
     }
 
+    Import-DotEnv (Join-Path $ProjectRoot ".env")
+    Import-DotEnv (Join-Path $BackendDir ".env")
+
     $requirementsFile = Join-Path $BackendDir "requirements.txt"
+    $requirementsFiles = @($requirementsFile)
+    if ($env:FRAMEFLOW_ASR_PROVIDER -eq "local") {
+        $requirementsFiles += Join-Path $BackendDir "requirements-asr-local.txt"
+    }
     $requirementsMarker = Join-Path $VenvDir ".frameflow-requirements.sha256"
-    $requirementsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirementsFile).Hash
+    $requirementsHash = ($requirementsFiles | ForEach-Object {
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash
+    }) -join ":"
     $installedRequirementsHash = if (Test-Path -LiteralPath $requirementsMarker) {
         (Get-Content -Raw -LiteralPath $requirementsMarker).Trim()
     } else {
@@ -229,7 +238,11 @@ try {
             throw "Backend dependencies are missing or outdated; run without -SkipInstall once."
         }
         Write-Step "Installing backend dependencies..."
-        & $VenvPython -m pip install --disable-pip-version-check -r $requirementsFile
+        $pipArguments = @("-m", "pip", "install", "--disable-pip-version-check")
+        foreach ($file in $requirementsFiles) {
+            $pipArguments += @("-r", $file)
+        }
+        & $VenvPython @pipArguments
         if ($LASTEXITCODE -ne 0) {
             throw "Backend dependency installation failed."
         }
@@ -282,9 +295,6 @@ try {
         }
         Set-Content -NoNewline -LiteralPath $frontendMarker -Value $packageLockHash
     }
-
-    Import-DotEnv (Join-Path $ProjectRoot ".env")
-    Import-DotEnv (Join-Path $BackendDir ".env")
 
     $SelectedBackendPort = Find-AvailablePort -PreferredPort $BackendPort -RequirePreferred:$StrictPorts
     $SelectedFrontendPort = Find-AvailablePort -PreferredPort $FrontendPort -RequirePreferred:$StrictPorts

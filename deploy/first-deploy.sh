@@ -16,18 +16,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   cp "$ROOT_DIR/deploy/.env.example" "$ENV_FILE"
 fi
 
-upsert_env() {
-  local key="$1" value="$2" tmp
-  tmp="$(mktemp)"
-  awk -v key="$key" -v value="$value" '
-    BEGIN { found=0 }
-    $0 ~ "^" key "=" { print key "=" value; found=1; next }
-    { print }
-    END { if (!found) print key "=" value }
-  ' "$ENV_FILE" > "$tmp"
-  mv "$tmp" "$ENV_FILE"
-}
-
 if [[ -n "$domain" ]]; then
   [[ "$domain" != *://* && "$domain" != *" "* ]] || die "域名只填写主机名，例如 app.example.com"
   upsert_env DOMAIN "$domain"
@@ -43,6 +31,12 @@ email="$(env_value ACME_EMAIL)"
 [[ "$email" == *@* && "$email" != *example.com ]] || die "请填写真实的 ACME 联系邮箱"
 
 chmod 600 "$ENV_FILE"
+if [[ "$(env_value ENABLE_BASIC_AUTH true)" == "true" ]]; then
+  FRAMEFLOW_AUTH_NO_RESTART=1 bash "$SCRIPT_DIR/configure-auth.sh" enable
+else
+  printf '警告：ENABLE_BASIC_AUTH=false，当前部署不会启用整站鉴权。\n' >&2
+  FRAMEFLOW_AUTH_NO_RESTART=1 bash "$SCRIPT_DIR/configure-auth.sh" disable
+fi
 cd "$ROOT_DIR"
 compose config --quiet
 

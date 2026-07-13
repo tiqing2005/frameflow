@@ -1,0 +1,9 @@
+* text=auto
+
+# Linux deployment entrypoints must remain executable by POSIX shells even
+# when contributors work with core.autocrlf=true on Windows.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Caddyfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
