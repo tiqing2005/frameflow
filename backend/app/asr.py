@@ -25,6 +25,11 @@ from .config import Settings
 logger = logging.getLogger(__name__)
 
 
+DASHSCOPE_CHUNK_SECONDS = 75
+DASHSCOPE_NETWORK_MAX_ATTEMPTS = 3
+DASHSCOPE_POLL_REQUEST_TIMEOUT_SECONDS = 10.0
+
+
 ASRErrorCategory = Literal["input", "transient", "configuration", "dependency"]
 REARMABLE_ASR_ERROR_CODES = {
     "ASR_OPENAI_KEY_MISSING",
@@ -436,19 +441,21 @@ def _ffmpeg_executable() -> str:
 
 
 @contextmanager
-def _prepare_dashscope_audio(path: Path, settings: Settings) -> Iterator[Path]:
-    """Create a compact private MP3 and remove every staging artifact on exit.
+def _prepare_dashscope_audio(path: Path, settings: Settings) -> Iterator[tuple[Path, ...]]:
+    """Create private 75-second MP3 chunks and remove all artifacts on exit.
 
-    ffmpeg first writes a unique partial file. Only a successfully validated
-    result is atomically renamed to the path that can receive a signed URL, so
-    DashScope can never download a half-written audio stream.
+    ffmpeg writes every chunk under a unique partial name. The complete set is
+    validated and renamed before it is yielded, and signed URLs are only
+    created after that yield. DashScope therefore cannot observe a partial
+    chunk set, even though publishing several filesystem entries cannot itself
+    be one operating-system rename.
     """
 
     staging_dir = settings.data_dir / "private" / "asr-staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
     identifier = uuid.uuid4().hex
-    partial = staging_dir / f".{identifier}.tmp.mp3"
-    prepared = staging_dir / f"{identifier}.mp3"
+    partial_pattern = staging_dir / f".{identifier}.%05d.tmp.mp3"
+    prepared: list[Path] = []
     try:
         executable = _ffmpeg_executable()
         command = [
@@ -470,10 +477,16 @@ def _prepare_dashscope_audio(path: Path, settings: Settings) -> Iterator[Path]:
             "-codec:a",
             "libmp3lame",
             "-b:a",
-            "24k",
+            "8k",
             "-f",
+            "segment",
+            "-segment_time",
+            str(DASHSCOPE_CHUNK_SECONDS),
+            "-reset_timestamps",
+            "1",
+            "-segment_format",
             "mp3",
-            str(partial),
+            str(partial_pattern),
         ]
         try:
             completed = subprocess.run(
@@ -507,18 +520,28 @@ def _prepare_dashscope_audio(path: Path, settings: Settings) -> Iterator[Path]:
                 "dependency",
             ) from exc
 
-        if completed.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
+        partials = sorted(staging_dir.glob(f".{identifier}.*.tmp.mp3"))
+        if (
+            completed.returncode != 0
+            or not partials
+            or any(not partial.is_file() or partial.stat().st_size == 0 for partial in partials)
+        ):
             raise TranscriptionError(
                 "ASR_MEDIA_PREPROCESSING_FAILED",
                 "无法从上传文件中提取可用音轨，请检查音视频格式或内容",
                 False,
                 "input",
             )
-        partial.replace(prepared)
-        yield prepared
+        for index, partial in enumerate(partials):
+            published = staging_dir / f"{identifier}.{index:05d}.mp3"
+            partial.replace(published)
+            prepared.append(published)
+        yield tuple(prepared)
     finally:
-        partial.unlink(missing_ok=True)
-        prepared.unlink(missing_ok=True)
+        for artifact in staging_dir.glob(f".{identifier}.*.tmp.mp3"):
+            artifact.unlink(missing_ok=True)
+        for artifact in prepared:
+            artifact.unlink(missing_ok=True)
 
 
 def _dashscope_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
@@ -585,6 +608,15 @@ def _dashscope_request_timeout(deadline: float, phase: str) -> float:
     return max(0.001, min(30.0, remaining))
 
 
+def _dashscope_poll_request_timeout(deadline: float, phase: str) -> float:
+    """Keep a lost status request from consuming a large share of the deadline."""
+
+    return min(
+        DASHSCOPE_POLL_REQUEST_TIMEOUT_SECONDS,
+        _dashscope_request_timeout(deadline, phase),
+    )
+
+
 def _dashscope_poll_retry_delay(
     consecutive_failures: int,
     poll_seconds: float,
@@ -595,6 +627,116 @@ def _dashscope_poll_retry_delay(
     base_delay = max(0.25, min(1.0, poll_seconds))
     exponent = min(max(0, consecutive_failures - 1), 5)
     return max(0.0, min(5.0, base_delay * (2**exponent), remaining))
+
+
+def _dashscope_request_with_network_retries(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    deadline: float,
+    phase: str,
+    retry_event: str,
+    poll_seconds: float,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Retry transport failures without extending the task-wide deadline."""
+
+    for attempt in range(1, DASHSCOPE_NETWORK_MAX_ATTEMPTS + 1):
+        try:
+            return client.request(
+                method,
+                url,
+                timeout=_dashscope_request_timeout(deadline, phase),
+                **kwargs,
+            )
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol):
+            raise
+        except httpx.RequestError as exc:
+            remaining = max(0.0, deadline - time.monotonic())
+            if attempt >= DASHSCOPE_NETWORK_MAX_ATTEMPTS or remaining <= 0:
+                logger.warning(
+                    "event=%s_exhausted attempt=%s error_type=%s remaining_seconds=%.3f",
+                    retry_event,
+                    attempt,
+                    type(exc).__name__,
+                    remaining,
+                )
+                raise
+            retry_delay = _dashscope_poll_retry_delay(attempt, poll_seconds, remaining)
+            logger.warning(
+                "event=%s attempt=%s error_type=%s retry_in_seconds=%.3f "
+                "remaining_seconds=%.3f",
+                retry_event,
+                attempt,
+                type(exc).__name__,
+                retry_delay,
+                remaining,
+            )
+            time.sleep(retry_delay)
+    raise AssertionError("unreachable DashScope retry state")
+
+
+def _dashscope_result_urls(
+    results: list[Any],
+    file_urls: list[str],
+    payload: dict[str, Any],
+    output: dict[str, Any],
+) -> list[str]:
+    """Return transcription URLs in the exact order of submitted media URLs."""
+
+    parsed: list[tuple[str, str]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        subtask_status = str(item.get("subtask_status", "")).strip().upper()
+        if subtask_status == "FAILED":
+            raise _dashscope_failure(payload, output, fallback=item)
+        nested = item.get("output")
+        nested_output = nested if isinstance(nested, dict) else {}
+        result_url = str(
+            item.get("transcription_url")
+            or nested_output.get("transcription_url")
+            or ""
+        ).strip()
+        source_url = str(item.get("file_url") or nested_output.get("file_url") or "").strip()
+        if not result_url:
+            raise TranscriptionError(
+                "ASR_PROVIDER_RESPONSE_INVALID",
+                "DashScope 任务成功但至少一个分片未返回 transcription_url",
+                True,
+                "transient",
+            )
+        parsed.append((source_url, result_url))
+
+    if len(parsed) != len(file_urls):
+        raise TranscriptionError(
+            "ASR_PROVIDER_RESPONSE_INVALID",
+            f"DashScope 返回 {len(parsed)} 个分片结果，但提交了 {len(file_urls)} 个分片",
+            True,
+            "transient",
+        )
+
+    source_markers = [source_url for source_url, _result_url in parsed]
+    if all(source_markers):
+        by_source = {source_url: result_url for source_url, result_url in parsed}
+        if len(by_source) != len(parsed) or set(by_source) != set(file_urls):
+            raise TranscriptionError(
+                "ASR_PROVIDER_RESPONSE_INVALID",
+                "DashScope 分片结果与提交的 file_urls 无法一一对应",
+                True,
+                "transient",
+            )
+        return [by_source[file_url] for file_url in file_urls]
+    if any(source_markers):
+        raise TranscriptionError(
+            "ASR_PROVIDER_RESPONSE_INVALID",
+            "DashScope 仅为部分分片返回了 file_url，无法安全恢复顺序",
+            True,
+            "transient",
+        )
+    # Older compatible endpoints omit file_url but preserve input order.
+    return [result_url for _source_url, result_url in parsed]
 
 
 def _dashscope_failure(
@@ -691,13 +833,26 @@ def _dashscope_failure(
     )
 
 
-def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str]:
-    token = create_asr_source_token(path, settings)
+def _dashscope_submit_and_wait(
+    paths: Path | tuple[Path, ...] | list[Path], settings: Settings
+) -> tuple[str, str]:
+    prepared_paths = [paths] if isinstance(paths, Path) else list(paths)
+    if not prepared_paths:
+        raise TranscriptionError(
+            "ASR_MEDIA_PREPROCESSING_FAILED",
+            "音频预处理未生成任何可提交分片",
+            False,
+            "input",
+        )
     # DashScope examples always expose a media filename in the URL. Keep the
     # signed token in its own path segment and provide an explicit MP3 suffix
     # so provider-side downloaders can determine the format from both the URL
     # and response headers.
-    file_url = f"{settings.dashscope_public_base_url}/api/v1/asr/source/{token}/audio.mp3"
+    file_urls = [
+        f"{settings.dashscope_public_base_url}/api/v1/asr/source/"
+        f"{create_asr_source_token(path, settings)}/audio.mp3"
+        for path in prepared_paths
+    ]
     deadline = time.monotonic() + settings.asr_timeout
     headers = {
         "Authorization": f"Bearer {settings.dashscope_api_key}",
@@ -707,11 +862,20 @@ def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str
     phase = "提交任务"
     try:
         with httpx.Client(timeout=min(30.0, settings.asr_timeout)) as client:
-            response = client.post(
+            response = _dashscope_request_with_network_retries(
+                client,
+                "POST",
                 f"{settings.dashscope_base_url}/services/audio/asr/transcription",
+                deadline=deadline,
+                phase=phase,
+                retry_event="dashscope_asr_submit_retry",
+                poll_seconds=settings.dashscope_poll_seconds,
                 headers=headers,
-                json={"model": settings.asr_model, "input": {"file_urls": [file_url]}, "parameters": {}},
-                timeout=_dashscope_request_timeout(deadline, phase),
+                json={
+                    "model": settings.asr_model,
+                    "input": {"file_urls": file_urls},
+                    "parameters": {},
+                },
             )
             if response.status_code >= 400:
                 raise _provider_http_error(response)
@@ -724,12 +888,13 @@ def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str
                 )
             request_id = str(submit_payload.get("request_id", "")).strip()
             logger.info(
-                "DashScope ASR submitted task_id=%s request_id=%s model=%s",
+                "DashScope ASR submitted task_id=%s request_id=%s model=%s chunks=%s",
                 task_id,
                 request_id or "-",
                 settings.asr_model,
+                len(file_urls),
             )
-            result_url = ""
+            result_urls: list[str] = []
             last_status = ""
             consecutive_poll_failures = 0
             next_poll_delay = settings.dashscope_poll_seconds
@@ -743,8 +908,10 @@ def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str
                     poll = client.get(
                         f"{settings.dashscope_base_url}/tasks/{task_id}",
                         headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
-                        timeout=_dashscope_request_timeout(deadline, phase),
+                        timeout=_dashscope_poll_request_timeout(deadline, phase),
                     )
+                except (httpx.InvalidURL, httpx.UnsupportedProtocol):
+                    raise
                 except httpx.RequestError as exc:
                     consecutive_poll_failures += 1
                     remaining = max(0.0, deadline - time.monotonic())
@@ -826,27 +993,12 @@ def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str
                             True,
                             "transient",
                         )
-                    for item in results:
-                        if isinstance(item, dict):
-                            subtask_status = str(item.get("subtask_status", "")).strip().upper()
-                            if subtask_status == "FAILED":
-                                raise _dashscope_failure(poll_payload, output, fallback=item)
-                            nested = item.get("output")
-                            nested_output = nested if isinstance(nested, dict) else {}
-                            result_url = str(
-                                item.get("transcription_url")
-                                or nested_output.get("transcription_url")
-                                or ""
-                            ).strip()
-                            if result_url:
-                                break
-                    if not result_url:
-                        raise TranscriptionError(
-                            "ASR_PROVIDER_RESPONSE_INVALID",
-                            "DashScope 任务成功但未返回 transcription_url",
-                            True,
-                            "transient",
-                        )
+                    result_urls = _dashscope_result_urls(
+                        results,
+                        file_urls,
+                        poll_payload,
+                        output,
+                    )
                     break
                 if status not in {"PENDING", "RUNNING"}:
                     raise TranscriptionError(
@@ -855,38 +1007,48 @@ def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str
                         True,
                         "transient",
                     )
-            if not result_url:
+            if not result_urls:
                 raise TranscriptionError(
                     "ASR_TIMEOUT", "DashScope 语音识别任务等待超时", True, "transient"
                 )
-            phase = "下载转写结果"
-            result = client.get(
-                result_url,
-                timeout=_dashscope_request_timeout(deadline, phase),
-            )
-            if result.status_code >= 400:
-                if result.status_code in {404, 410}:
+            chunk_texts: list[str] = []
+            for index, result_url in enumerate(result_urls, start=1):
+                phase = f"下载转写结果（{index}/{len(result_urls)}）"
+                result = _dashscope_request_with_network_retries(
+                    client,
+                    "GET",
+                    result_url,
+                    deadline=deadline,
+                    phase=phase,
+                    retry_event="dashscope_asr_result_retry",
+                    poll_seconds=settings.dashscope_poll_seconds,
+                )
+                if result.status_code >= 400:
+                    if result.status_code in {404, 410}:
+                        raise TranscriptionError(
+                            "ASR_PROVIDER_RESULT_UNAVAILABLE",
+                            "DashScope 转写结果地址已失效，可重新执行",
+                            True,
+                            "transient",
+                        )
+                    raise _provider_http_error(result)
+                payload = _dashscope_json_object(result, "转写结果")
+                transcripts = payload.get("transcripts")
+                if not isinstance(transcripts, list):
                     raise TranscriptionError(
-                        "ASR_PROVIDER_RESULT_UNAVAILABLE",
-                        "DashScope 转写结果地址已失效，可重新执行",
+                        "ASR_PROVIDER_RESPONSE_INVALID",
+                        "DashScope 转写结果缺少 transcripts",
                         True,
                         "transient",
                     )
-                raise _provider_http_error(result)
-            payload = _dashscope_json_object(result, "转写结果")
-            transcripts = payload.get("transcripts")
-            if not isinstance(transcripts, list):
-                raise TranscriptionError(
-                    "ASR_PROVIDER_RESPONSE_INVALID",
-                    "DashScope 转写结果缺少 transcripts",
-                    True,
-                    "transient",
-                )
-            text = "\n".join(
-                str(item.get("text", "")).strip()
-                for item in transcripts
-                if isinstance(item, dict) and str(item.get("text", "")).strip()
-            ).strip()
+                chunk_text = "\n".join(
+                    str(item.get("text", "")).strip()
+                    for item in transcripts
+                    if isinstance(item, dict) and str(item.get("text", "")).strip()
+                ).strip()
+                if chunk_text:
+                    chunk_texts.append(chunk_text)
+            text = "\n".join(chunk_texts).strip()
             if not text:
                 raise TranscriptionError(
                     "ASR_NO_SPEECH", "媒体中未识别到可用语音内容", False, "input"
