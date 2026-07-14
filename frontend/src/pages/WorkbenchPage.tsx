@@ -57,6 +57,13 @@ const selectionAsset = (segment?: Segment) => {
   return selected?.asset || segment.recommendations[0]?.asset || null
 }
 
+const previewRequestError = (error: unknown) => {
+  if (error instanceof ApiError && error.status === 404) {
+    return '组合预览接口暂不可用。请确认后端已更新并重启服务，然后刷新状态。'
+  }
+  return errorMessage(error)
+}
+
 export function WorkbenchPage({ projectId }: { projectId: string }) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -180,7 +187,20 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
       return result
     } catch (err) {
       if (isAbortError(err) || !mountedRef.current || currentLoad !== previewLoadVersion.current || projectIdRef.current !== requestProjectId) return null
-      setPreviewError(errorMessage(err))
+      if (err instanceof ApiError && err.status === 404) {
+        try {
+          const fallbackTimeline = await api.projectTimeline(requestProjectId, { signal: controller.signal })
+          if (!mountedRef.current || controller.signal.aborted || currentLoad !== previewLoadVersion.current || projectIdRef.current !== requestProjectId) return null
+          setTimeline(fallbackTimeline)
+          setPreview(null)
+          setPreviewJob(null)
+          setPreviewError(previewRequestError(err))
+          return { preview: null, timeline: fallbackTimeline }
+        } catch (timelineError) {
+          if (isAbortError(timelineError) || controller.signal.aborted) return null
+        }
+      }
+      setPreviewError(previewRequestError(err))
       return null
     } finally {
       if (mountedRef.current && currentLoad === previewLoadVersion.current && projectIdRef.current === requestProjectId) setPreviewLoading(false)
@@ -411,7 +431,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
       if (jobId && ['queued', 'running'].includes(result.preview.job?.status || result.preview.status)) startPreviewPolling(jobId)
       else if (result.preview.status === 'succeeded') await loadPreviewOverview(false)
     } catch (err) {
-      if (!isAbortError(err) && mountedRef.current && projectIdRef.current === operationProjectId) setPreviewError(errorMessage(err))
+      if (!isAbortError(err) && mountedRef.current && projectIdRef.current === operationProjectId) setPreviewError(previewRequestError(err))
     } finally {
       if (previewActionAbort.current === controller) previewActionAbort.current = null
       if (mountedRef.current && projectIdRef.current === operationProjectId) setPreviewCreating(false)
@@ -801,6 +821,8 @@ function TimelinePreview({
   onGenerate: () => void
   onReload: () => void
 }) {
+  const [outputLoadState, setOutputLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [outputRetry, setOutputRetry] = useState(0)
   const status = job?.status || preview?.status || ''
   const stale = Boolean(preview && timeline && preview.input_hash !== timeline.input_hash)
   const running = creating || (!stale && (status === 'queued' || status === 'running'))
@@ -809,6 +831,16 @@ function TimelinePreview({
   const progress = creating ? 2 : Math.max(2, Math.min(100, job?.progress ?? (succeeded ? 100 : 4)))
   const outputUrl = mediaUrl(preview?.output_url)
   const items = timeline?.items || []
+
+  useEffect(() => {
+    setOutputLoadState(outputUrl ? 'loading' : 'idle')
+    setOutputRetry(0)
+  }, [outputUrl])
+
+  const retryOutput = () => {
+    setOutputLoadState('loading')
+    setOutputRetry((value) => value + 1)
+  }
 
   return (
     <section className="timeline-preview" aria-labelledby="timeline-preview-title">
@@ -856,9 +888,32 @@ function TimelinePreview({
       )}
 
       {succeeded && outputUrl && (
-        <div className="timeline-output">
-          <video className="timeline-output-video" src={outputUrl} controls playsInline preload="metadata" aria-label="FrameFlow 组合预览视频" />
-          <div><span><Check size={15} /> 预览已生成</span><small>{preview?.segment_count || timeline?.segment_count || 0} 个片段 · {formatDuration(preview?.duration_ms ?? timeline?.duration_ms)}</small></div>
+        <div className={`timeline-output${outputLoadState === 'error' ? ' output-error' : ''}`}>
+          {outputLoadState === 'error' ? (
+            <div className="timeline-output-media-error" role="alert">
+              <AlertTriangle size={22} />
+              <strong>预览文件暂时无法播放</strong>
+              <span>文件可能尚未发布完成、已被清理，或浏览器不支持当前编码。</span>
+              <button type="button" onClick={retryOutput}>重新加载视频</button>
+            </div>
+          ) : (
+            <video
+              key={`${outputUrl}:${outputRetry}`}
+              className="timeline-output-video"
+              src={outputUrl}
+              controls
+              playsInline
+              preload="metadata"
+              aria-label="FrameFlow 组合预览视频"
+              onLoadStart={() => setOutputLoadState('loading')}
+              onLoadedMetadata={() => setOutputLoadState('ready')}
+              onError={() => setOutputLoadState('error')}
+            />
+          )}
+          <div>
+            <span>{outputLoadState === 'error' ? <><AlertTriangle size={15} /> 预览文件不可用</> : outputLoadState === 'loading' ? <><LoaderCircle size={15} className="spin" /> 预览已生成，正在加载</> : <><Check size={15} /> 预览已生成</>}</span>
+            <small>{preview?.segment_count || timeline?.segment_count || 0} 个片段 · {formatDuration(preview?.duration_ms ?? timeline?.duration_ms)}</small>
+          </div>
         </div>
       )}
 

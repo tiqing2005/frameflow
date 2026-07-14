@@ -102,12 +102,20 @@ export function EmptyState({ icon, title, description, action }: { icon?: ReactN
 
 export function AssetVisual({ asset, className = '', alt, contain = false, controls = false, eager = false }: { asset?: Asset | null; className?: string; alt?: string; contain?: boolean; controls?: boolean; eager?: boolean }) {
   const [failed, setFailed] = useState(false)
+  const [posterFailed, setPosterFailed] = useState(false)
   const url = asset?.kind === 'video' ? assetFileUrl(asset) : assetPosterUrl(asset) || assetFileUrl(asset)
   const poster = asset?.kind === 'video' ? assetPosterUrl(asset) : ''
-  useEffect(() => setFailed(false), [url])
+  useEffect(() => {
+    setFailed(false)
+    setPosterFailed(false)
+  }, [url, poster])
   if (url && !failed) {
     if (asset?.kind === 'video') {
-      return <video className={`${className} asset-video`.trim()} src={url} poster={poster || undefined} aria-label={alt || asset.name || '视频素材预览'} controls={controls} muted={!controls} playsInline preload={controls || eager ? 'metadata' : 'none'} onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
+      // Probe the poster independently: browsers do not fire a video error when
+      // only the poster URL is 404. Once it fails, remove the poster and ask the
+      // browser for metadata/first frame so cards do not remain black.
+      const probe = poster && !controls ? <img className="asset-poster-probe" src={poster} alt="" aria-hidden="true" onError={() => setPosterFailed(true)} /> : null
+      return <>{probe}<video className={`${className} asset-video`.trim()} src={url} poster={!posterFailed ? (poster || undefined) : undefined} aria-label={alt || asset.name || '视频素材预览'} controls={controls} muted={!controls} playsInline preload={controls || eager || !poster || posterFailed ? 'metadata' : 'none'} onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} /></>
     }
     return <img className={className} src={url} alt={alt || asset?.name || '素材预览'} loading={eager ? 'eager' : 'lazy'} decoding="async" onError={() => setFailed(true)} style={contain ? { objectFit: 'contain' } : undefined} />
   }

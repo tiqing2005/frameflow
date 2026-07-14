@@ -529,6 +529,7 @@
 
 /* Workbench composition timeline and rendered preview */
 .timeline-preview { margin: 14px 24px 0; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+.asset-poster-probe { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .timeline-preview-head { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .timeline-preview-head > div { min-width: 0; }
 .timeline-kicker { display: inline-flex; align-items: center; gap: 5px; color: var(--blue); font-size: 10px; font-weight: 700; }
@@ -555,8 +556,13 @@
 .timeline-progress > i > span { height: 100%; display: block; background: var(--blue); transition: width .25s ease; }
 .timeline-output { display: grid; grid-template-columns: minmax(230px, 44%) 1fr; align-items: center; gap: 14px; padding: 12px; border-top: 1px solid var(--line); }
 .timeline-output-video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #111318; object-fit: contain; }
+.timeline-output-media-error { width: 100%; min-height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; padding: 18px; color: #9b454a; background: #fff3f2; text-align: center; }
+.timeline-output-media-error strong { font-size: 12px; }
+.timeline-output-media-error span { max-width: 260px; color: #a96b6e; font-size: 10px; line-height: 1.5; }
+.timeline-output-media-error button { margin-top: 3px; padding: 5px 9px; color: inherit; background: #fff; border: 1px solid #e8bcbc; border-radius: 5px; cursor: pointer; font-size: 10px; }
 .timeline-output > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .timeline-output > div > span { display: inline-flex; align-items: center; gap: 5px; color: #397052; font-size: 11px; font-weight: 700; }
+.timeline-output.output-error > div > span { color: #9b454a; }
 .timeline-output small { color: #858e9d; font-size: 10px; }
 .timeline-error { display: flex; align-items: center; gap: 7px; padding: 10px 13px; color: #9b454a; background: #fff3f2; border-top: 1px solid #f1d2cf; font-size: 10px; }
 .timeline-stale { display: flex; align-items: center; gap: 7px; padding: 10px 13px; color: #8a5c22; background: #fff8e8; border-top: 1px solid #f0dfb4; font-size: 10px; }
