@@ -55,8 +55,12 @@ function Test-BackendContract {
         $spec = Invoke-RestMethod -Uri "$apiBase/api/openapi.json" -TimeoutSec 3
         $requiredOperations = @(
             @{ Path = '/api/v1/projects/{project_id}/timeline'; Method = 'get' },
+            @{ Path = '/api/v1/projects/{project_id}/timeline/timing'; Method = 'put' },
             @{ Path = '/api/v1/projects/{project_id}/preview'; Method = 'get' },
             @{ Path = '/api/v1/projects/{project_id}/preview'; Method = 'post' },
+            @{ Path = '/api/v1/segments/{segment_id}/timing'; Method = 'patch' },
+            @{ Path = '/api/v1/image-generations'; Method = 'post' },
+            @{ Path = '/api/v1/segments/{segment_id}/image-generations'; Method = 'post' },
             @{ Path = '/api/v1/auth/session'; Method = 'get' },
             @{ Path = '/api/v1/auth/login'; Method = 'post' },
             @{ Path = '/api/v1/assets/{asset_id}'; Method = 'delete' }

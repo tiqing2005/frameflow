@@ -77,7 +77,14 @@ services:
       FRAMEFLOW_EMBEDDING_DEVICE: ${FRAMEFLOW_EMBEDDING_DEVICE:-cpu}
       IMAGE_API_BASE_URL: ${IMAGE_API_BASE_URL:-}
       IMAGE_API_KEY: ${IMAGE_API_KEY:-}
-      IMAGE_MODEL: ${IMAGE_MODEL:-}
+      IMAGE_MODEL: ${IMAGE_MODEL:-gpt-image-2}
+      IMAGE_API_TIMEOUT: ${IMAGE_API_TIMEOUT:-180}
+      IMAGE_MAX_RESPONSE_MB: ${IMAGE_MAX_RESPONSE_MB:-25}
+      IMAGE_MAX_OUTPUT_MB: ${IMAGE_MAX_OUTPUT_MB:-15}
+      IMAGE_MAX_PIXELS: ${IMAGE_MAX_PIXELS:-24000000}
+      IMAGE_DRAFT_RETENTION_HOURS: ${IMAGE_DRAFT_RETENTION_HOURS:-72}
+      IMAGE_DAILY_LIMIT: ${IMAGE_DAILY_LIMIT:-50}
+      IMAGE_MAX_PENDING: ${IMAGE_MAX_PENDING:-5}
     expose:
       - "8000"
     volumes:
@@ -98,7 +105,9 @@ services:
     pids_limit: ${FRAMEFLOW_PIDS_LIMIT:-256}
     cpus: ${FRAMEFLOW_CPUS:-2.0}
     mem_limit: ${FRAMEFLOW_MEMORY_LIMIT:-3g}
-    stop_grace_period: 45s
+    # Keep this above IMAGE_API_TIMEOUT + 30s so tini/app.serve can terminate
+    # the API, let the billed image request finish, and reap both worker pools.
+    stop_grace_period: ${FRAMEFLOW_STOP_GRACE_PERIOD:-240s}
     logging:
       driver: json-file
       options:
