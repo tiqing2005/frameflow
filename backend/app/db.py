@@ -91,6 +91,31 @@ class Database:
                     connection.execute(
                         text("ALTER TABLE worker_heartbeats ADD COLUMN status_detail TEXT")
                     )
+            # The original schema stored a singleton heartbeat at id=1. Keep
+            # that row and primary key intact while allowing one durable row
+            # per stable worker id. Heartbeats are ephemeral, so if an
+            # interrupted pre-release migration left duplicates, retain only
+            # the newest row before enforcing uniqueness.
+            with self.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "DELETE FROM worker_heartbeats WHERE id NOT IN "
+                        "(SELECT MAX(id) FROM worker_heartbeats GROUP BY worker_id)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "ix_worker_heartbeats_worker_id "
+                        "ON worker_heartbeats (worker_id)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_heartbeat_at "
+                        "ON worker_heartbeats (heartbeat_at)"
+                    )
+                )
         from .seed import seed_assets
 
         with self.session() as session:

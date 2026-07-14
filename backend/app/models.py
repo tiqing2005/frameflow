@@ -293,9 +293,13 @@ class FaultControl(Base):
 class WorkerHeartbeat(Base):
     __tablename__ = "worker_heartbeats"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    worker_id: Mapped[str] = mapped_column(String(120), nullable=False)
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    worker_id: Mapped[str] = mapped_column(
+        String(120), nullable=False, unique=True, index=True
+    )
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
     operational_state: Mapped[str] = mapped_column(String(24), default="ready", nullable=False)
     status_detail: Mapped[str | None] = mapped_column(Text)
 

@@ -290,12 +290,16 @@ def enhance_semantic_segments(
         model=settings.llm_model,
         timeout=settings.llm_timeout,
     )
+    # The transport is OpenAI-compatible, but observability should retain the
+    # configured vendor. Otherwise a real DeepSeek request is indistinguishable
+    # from any other compatible gateway in the run history.
+    trace_provider = client.name if provider is not None else configured
     try:
         result = client.complete_json(transcript)
         segments = [item.model_dump() for item in result.segments]
         return SemanticEnhancement(
             segments,
-            client.name,
+            trace_provider,
             settings.llm_model,
             False,
             "succeeded",
@@ -308,7 +312,7 @@ def enhance_semantic_segments(
             message = message.replace(settings.llm_api_key, "[REDACTED]")
         return SemanticEnhancement(
             fallback,
-            client.name,
+            trace_provider,
             settings.llm_model,
             True,
             "degraded",

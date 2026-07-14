@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
+import time
+from collections.abc import Sequence
 
 import uvicorn
 
@@ -13,14 +16,43 @@ from .db import Database
 
 
 def monitor_worker(worker: subprocess.Popen, stopping: threading.Event) -> None:
-    """Fail fast when the colocated worker exits while the API is still serving."""
+    """Fail fast when any colocated worker exits while the API is serving."""
     worker.wait()
     if not stopping.is_set():
         os.kill(os.getpid(), signal.SIGTERM)
 
 
+def terminate_workers(workers: Sequence[subprocess.Popen]) -> None:
+    """Ask all live workers to stop without blocking the API signal handler."""
+    for worker in workers:
+        if worker.poll() is None:
+            try:
+                worker.terminate()
+            except OSError:
+                # The worker may have exited between poll() and terminate().
+                pass
+
+
+def wait_for_workers(
+    workers: Sequence[subprocess.Popen], timeout: float = 10.0
+) -> None:
+    """Reap a worker pool, killing only processes that miss the shared deadline."""
+    deadline = time.monotonic() + timeout
+    for worker in workers:
+        if worker.poll() is not None:
+            continue
+        try:
+            worker.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                worker.kill()
+                worker.wait(timeout=1.0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
 def main() -> None:
-    """Run API and one durable worker in the same container lifecycle."""
+    """Run the API and a bounded durable-worker process pool together."""
     # Initialize the fresh data volume before API and worker start racing to
     # create tables and fixed-id seed rows in separate processes.
     settings = Settings.from_env()
@@ -28,27 +60,35 @@ def main() -> None:
     database.initialize()
     database.engine.dispose()
 
-    worker = subprocess.Popen([sys.executable, "-m", "app.worker"])
     stopping = threading.Event()
-    monitor = threading.Thread(
-        target=monitor_worker,
-        args=(worker, stopping),
-        name="frameflow-worker-monitor",
-        daemon=True,
-    )
-    monitor.start()
+    workers: list[subprocess.Popen] = []
 
-    def stop_worker(*_args):
+    def stop_workers(*_args):
         stopping.set()
-        if worker.poll() is None:
-            worker.terminate()
+        terminate_workers(workers)
 
     def handle_term(_signum, _frame):
-        stop_worker()
+        stop_workers()
         raise SystemExit(0)
 
-    signal.signal(signal.SIGTERM, handle_term)
     try:
+        signal.signal(signal.SIGTERM, handle_term)
+        for slot in range(settings.worker_concurrency):
+            worker_env = os.environ.copy()
+            worker_env["FRAMEFLOW_WORKER_ID"] = f"{socket.gethostname()}:{slot + 1}"
+            worker_env["FRAMEFLOW_DATABASE_INITIALIZED"] = "1"
+            worker = subprocess.Popen(
+                [sys.executable, "-m", "app.worker"], env=worker_env
+            )
+            workers.append(worker)
+            monitor = threading.Thread(
+                target=monitor_worker,
+                args=(worker, stopping),
+                name=f"frameflow-worker-monitor-{slot + 1}",
+                daemon=True,
+            )
+            monitor.start()
+
         uvicorn.run(
             "app.main:app",
             host=os.getenv("HOST", "0.0.0.0"),
@@ -57,11 +97,8 @@ def main() -> None:
             proxy_headers=True,
         )
     finally:
-        stop_worker()
-        try:
-            worker.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            worker.kill()
+        stop_workers()
+        wait_for_workers(workers)
 
 
 if __name__ == "__main__":

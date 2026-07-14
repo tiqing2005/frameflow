@@ -54,7 +54,11 @@ class RateLimitMiddleware:
             return
         path = str(scope.get("path", ""))
         method = str(scope.get("method", "GET")).upper()
-        if not path.startswith("/api/v1") or path.startswith("/api/v1/health"):
+        if (
+            not path.startswith("/api/v1")
+            or path.startswith("/api/v1/health")
+            or path.startswith("/api/v1/asr/source/")
+        ):
             await self.app(scope, receive, send)
             return
         group = "read" if method in {"GET", "HEAD", "OPTIONS"} else "write"

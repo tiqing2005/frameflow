@@ -2,19 +2,27 @@ from __future__ import annotations
 
 import os
 import queue
+import shutil
+import subprocess
 import threading
 import base64
 import binascii
 import hashlib
 import hmac
 import json
+import logging
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 import httpx
 
 from .config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 ASRErrorCategory = Literal["input", "transient", "configuration", "dependency"]
@@ -28,6 +36,7 @@ REARMABLE_ASR_ERROR_CODES = {
     "ASR_MODEL_DOWNLOAD_NETWORK_ERROR",
     "ASR_LOCAL_DEPENDENCY_MISSING",
     "ASR_LOCAL_RUNTIME_MISSING",
+    "ASR_MEDIA_PREPROCESSOR_MISSING",
 }
 
 
@@ -389,7 +398,131 @@ def resolve_asr_source_token(token: str, settings: Settings) -> Path | None:
         return None
 
 
+def _ffmpeg_executable() -> str:
+    """Resolve ffmpeg without making DashScope depend on a system-wide install."""
+
+    configured = os.getenv("FRAMEFLOW_FFMPEG_BINARY", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_file():
+            return str(candidate.resolve())
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+        raise TranscriptionError(
+            "ASR_MEDIA_PREPROCESSOR_MISSING",
+            "FRAMEFLOW_FFMPEG_BINARY 指向的 ffmpeg 不存在，无法准备云端转写音频",
+            True,
+            "dependency",
+        )
+
+    resolved = shutil.which("ffmpeg")
+    if resolved:
+        return resolved
+    try:
+        import imageio_ffmpeg
+
+        bundled = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        if bundled.is_file():
+            return str(bundled.resolve())
+    except (ImportError, RuntimeError, OSError):
+        pass
+    raise TranscriptionError(
+        "ASR_MEDIA_PREPROCESSOR_MISSING",
+        "服务器未安装可用的 ffmpeg，无法将音视频准备为 DashScope 支持的音频",
+        True,
+        "dependency",
+    )
+
+
+@contextmanager
+def _prepare_dashscope_audio(path: Path, settings: Settings) -> Iterator[Path]:
+    """Create a compact private MP3 and remove every staging artifact on exit.
+
+    ffmpeg first writes a unique partial file. Only a successfully validated
+    result is atomically renamed to the path that can receive a signed URL, so
+    DashScope can never download a half-written audio stream.
+    """
+
+    staging_dir = settings.data_dir / "private" / "asr-staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    identifier = uuid.uuid4().hex
+    partial = staging_dir / f".{identifier}.tmp.mp3"
+    prepared = staging_dir / f"{identifier}.mp3"
+    try:
+        executable = _ffmpeg_executable()
+        command = [
+            executable,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(path),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "24k",
+            "-f",
+            "mp3",
+            str(partial),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(1.0, settings.asr_timeout),
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise TranscriptionError(
+                "ASR_MEDIA_PREPROCESSOR_MISSING",
+                "服务器未安装可用的 ffmpeg，无法准备 DashScope 转写音频",
+                True,
+                "dependency",
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TranscriptionError(
+                "ASR_MEDIA_PREPROCESSING_TIMEOUT",
+                "音视频压缩超过允许时间，尚未提交到 DashScope",
+                True,
+                "transient",
+            ) from exc
+        except OSError as exc:
+            raise TranscriptionError(
+                "ASR_MEDIA_PREPROCESSING_FAILED",
+                "服务器无法启动音频预处理程序，尚未提交到 DashScope",
+                True,
+                "dependency",
+            ) from exc
+
+        if completed.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
+            raise TranscriptionError(
+                "ASR_MEDIA_PREPROCESSING_FAILED",
+                "无法从上传文件中提取可用音轨，请检查音视频格式或内容",
+                False,
+                "input",
+            )
+        partial.replace(prepared)
+        yield prepared
+    finally:
+        partial.unlink(missing_ok=True)
+        prepared.unlink(missing_ok=True)
+
+
 def _dashscope_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
+    # Validate provider configuration before spending CPU on media conversion.
     if not settings.dashscope_api_key:
         raise TranscriptionError(
             "ASR_DASHSCOPE_KEY_MISSING",
@@ -404,6 +537,149 @@ def _dashscope_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
             True,
             "configuration",
         )
+    with _prepare_dashscope_audio(path, settings) as prepared:
+        return _dashscope_submit_and_wait(prepared, settings)
+
+
+def _dashscope_json_object(response: httpx.Response, context: str) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise TranscriptionError(
+            "ASR_PROVIDER_RESPONSE_INVALID",
+            f"DashScope {context}返回了无法解析的 JSON",
+            True,
+            "transient",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise TranscriptionError(
+            "ASR_PROVIDER_RESPONSE_INVALID",
+            f"DashScope {context}响应结构无效",
+            True,
+            "transient",
+        )
+    return payload
+
+
+def _dashscope_output(payload: dict[str, Any], context: str) -> dict[str, Any]:
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        raise TranscriptionError(
+            "ASR_PROVIDER_RESPONSE_INVALID",
+            f"DashScope {context}未返回有效 output",
+            True,
+            "transient",
+        )
+    return output
+
+
+def _dashscope_request_timeout(deadline: float, phase: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TranscriptionError(
+            "ASR_TIMEOUT",
+            f"DashScope {phase}超过总等待时间",
+            True,
+            "transient",
+        )
+    return max(0.001, min(30.0, remaining))
+
+
+def _dashscope_failure(
+    payload: dict[str, Any],
+    output: dict[str, Any],
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> TranscriptionError:
+    fallback = fallback or {}
+    code = str(
+        fallback.get("code")
+        or output.get("code")
+        or payload.get("code")
+        or "TASK_FAILED"
+    ).strip()
+    provider_message = str(
+        fallback.get("message")
+        or output.get("message")
+        or payload.get("message")
+        or "供应商未提供失败原因"
+    ).strip()
+    detail = f"{code}: {provider_message}"[:500]
+    normalized = detail.casefold()
+
+    # File download failures are commonly temporary callback/network failures,
+    # not proof that the user's media is invalid. Prefer a safe retry for every
+    # unclassified provider-side task failure.
+    if any(
+        marker in normalized
+        for marker in (
+            "download",
+            "timeout",
+            "time_out",
+            "network",
+            "throttl",
+            "rate",
+            "internal",
+            "unavailable",
+            "temporar",
+            "system_error",
+            "service_error",
+        )
+    ):
+        return TranscriptionError(
+            "ASR_PROVIDER_UNAVAILABLE",
+            f"DashScope 任务暂时失败（{detail}）",
+            True,
+            "transient",
+        )
+    if any(
+        marker in normalized
+        for marker in (
+            "authentication",
+            "unauthorized",
+            "api_key",
+            "apikey",
+            "permission",
+            "accessdenied",
+            "model_not_found",
+            "invalidmodel",
+            "quota",
+        )
+    ):
+        return TranscriptionError(
+            "ASR_PROVIDER_CONFIGURATION_ERROR",
+            f"DashScope 配置或权限错误（{detail}）",
+            True,
+            "configuration",
+        )
+    if any(
+        marker in normalized
+        for marker in (
+            "invalidparameter",
+            "invalid_parameter",
+            "unsupported",
+            "format",
+            "no speech",
+            "nospeech",
+            "invalid audio",
+            "invalidfile",
+        )
+    ):
+        return TranscriptionError(
+            "ASR_INPUT_REJECTED",
+            f"DashScope 无法处理该媒体（{detail}）",
+            False,
+            "input",
+        )
+    return TranscriptionError(
+        "ASR_PROVIDER_UNAVAILABLE",
+        f"DashScope 任务失败（{detail}）",
+        True,
+        "transient",
+    )
+
+
+def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str]:
     token = create_asr_source_token(path, settings)
     file_url = f"{settings.dashscope_public_base_url}/api/v1/asr/source/{token}"
     deadline = time.monotonic() + settings.asr_timeout
@@ -412,82 +688,170 @@ def _dashscope_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
         "Content-Type": "application/json",
         "X-DashScope-Async": "enable",
     }
+    phase = "提交任务"
     try:
         with httpx.Client(timeout=min(30.0, settings.asr_timeout)) as client:
             response = client.post(
                 f"{settings.dashscope_base_url}/services/audio/asr/transcription",
                 headers=headers,
                 json={"model": settings.asr_model, "input": {"file_urls": [file_url]}, "parameters": {}},
+                timeout=_dashscope_request_timeout(deadline, phase),
             )
             if response.status_code >= 400:
                 raise _provider_http_error(response)
-            try:
-                task_id = str(response.json().get("output", {}).get("task_id", "")).strip()
-            except ValueError as exc:
-                raise TranscriptionError(
-                    "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 未返回有效任务信息", True, "transient"
-                ) from exc
+            submit_payload = _dashscope_json_object(response, "任务提交")
+            submit_output = _dashscope_output(submit_payload, "任务提交")
+            task_id = str(submit_output.get("task_id", "")).strip()
             if not task_id:
                 raise TranscriptionError(
                     "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 未返回 task_id", True, "transient"
                 )
+            request_id = str(submit_payload.get("request_id", "")).strip()
+            logger.info(
+                "DashScope ASR submitted task_id=%s request_id=%s model=%s",
+                task_id,
+                request_id or "-",
+                settings.asr_model,
+            )
             result_url = ""
+            last_status = ""
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
                 time.sleep(min(settings.dashscope_poll_seconds, max(0.0, remaining)))
+                if time.monotonic() >= deadline:
+                    break
+                phase = "查询任务状态"
                 poll = client.get(
                     f"{settings.dashscope_base_url}/tasks/{task_id}",
                     headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
+                    timeout=_dashscope_request_timeout(deadline, phase),
                 )
                 if poll.status_code >= 400:
+                    if poll.status_code == 404:
+                        raise TranscriptionError(
+                            "ASR_PROVIDER_TASK_NOT_FOUND",
+                            "DashScope 暂时无法找到已提交的任务",
+                            True,
+                            "transient",
+                        )
                     raise _provider_http_error(poll)
-                try:
-                    output = poll.json().get("output", {})
-                except ValueError as exc:
+                poll_payload = _dashscope_json_object(poll, "任务状态")
+                output = _dashscope_output(poll_payload, "任务状态")
+                status = str(output.get("task_status", "")).strip().upper()
+                if not status:
                     raise TranscriptionError(
                         "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 任务状态无法解析", True, "transient"
-                    ) from exc
-                status = str(output.get("task_status", ""))
+                    )
+                if status != last_status:
+                    logger.info(
+                        "DashScope ASR status task_id=%s request_id=%s status=%s",
+                        task_id,
+                        str(poll_payload.get("request_id", request_id) or "-"),
+                        status,
+                    )
+                    last_status = status
                 if status == "FAILED":
+                    failure = _dashscope_failure(poll_payload, output)
+                    logger.warning(
+                        "DashScope ASR failed task_id=%s code=%s message=%s",
+                        task_id,
+                        failure.code,
+                        failure.message,
+                    )
+                    raise failure
+                if status in {"CANCELED", "CANCELLED"}:
                     raise TranscriptionError(
-                        "ASR_INPUT_REJECTED", "DashScope 无法识别该媒体文件", False, "input"
+                        "ASR_PROVIDER_TASK_CANCELED",
+                        "DashScope 任务被供应商取消，可重新执行",
+                        True,
+                        "transient",
                     )
                 if status == "SUCCEEDED":
-                    for item in output.get("results", []):
+                    results = output.get("results")
+                    if not isinstance(results, list):
+                        raise TranscriptionError(
+                            "ASR_PROVIDER_RESPONSE_INVALID",
+                            "DashScope 成功响应缺少 results",
+                            True,
+                            "transient",
+                        )
+                    for item in results:
                         if isinstance(item, dict):
+                            subtask_status = str(item.get("subtask_status", "")).strip().upper()
+                            if subtask_status == "FAILED":
+                                raise _dashscope_failure(poll_payload, output, fallback=item)
+                            nested = item.get("output")
+                            nested_output = nested if isinstance(nested, dict) else {}
                             result_url = str(
                                 item.get("transcription_url")
-                                or (item.get("output") or {}).get("transcription_url")
+                                or nested_output.get("transcription_url")
                                 or ""
-                            )
+                            ).strip()
                             if result_url:
                                 break
+                    if not result_url:
+                        raise TranscriptionError(
+                            "ASR_PROVIDER_RESPONSE_INVALID",
+                            "DashScope 任务成功但未返回 transcription_url",
+                            True,
+                            "transient",
+                        )
                     break
+                if status not in {"PENDING", "RUNNING"}:
+                    raise TranscriptionError(
+                        "ASR_PROVIDER_RESPONSE_INVALID",
+                        f"DashScope 返回未知任务状态：{status[:80]}",
+                        True,
+                        "transient",
+                    )
             if not result_url:
                 raise TranscriptionError(
                     "ASR_TIMEOUT", "DashScope 语音识别任务等待超时", True, "transient"
                 )
-            result = client.get(result_url)
+            phase = "下载转写结果"
+            result = client.get(
+                result_url,
+                timeout=_dashscope_request_timeout(deadline, phase),
+            )
             if result.status_code >= 400:
+                if result.status_code in {404, 410}:
+                    raise TranscriptionError(
+                        "ASR_PROVIDER_RESULT_UNAVAILABLE",
+                        "DashScope 转写结果地址已失效，可重新执行",
+                        True,
+                        "transient",
+                    )
                 raise _provider_http_error(result)
-            try:
-                payload = result.json()
-            except ValueError as exc:
+            payload = _dashscope_json_object(result, "转写结果")
+            transcripts = payload.get("transcripts")
+            if not isinstance(transcripts, list):
                 raise TranscriptionError(
-                    "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 转写结果无法解析", True, "transient"
-                ) from exc
-            text = "".join(
+                    "ASR_PROVIDER_RESPONSE_INVALID",
+                    "DashScope 转写结果缺少 transcripts",
+                    True,
+                    "transient",
+                )
+            text = "\n".join(
                 str(item.get("text", "")).strip()
-                for item in payload.get("transcripts", [])
-                if isinstance(item, dict)
+                for item in transcripts
+                if isinstance(item, dict) and str(item.get("text", "")).strip()
             ).strip()
             if not text:
                 raise TranscriptionError(
                     "ASR_NO_SPEECH", "媒体中未识别到可用语音内容", False, "input"
                 )
+            logger.info(
+                "DashScope ASR completed task_id=%s request_id=%s text_chars=%s",
+                task_id,
+                request_id or "-",
+                len(text),
+            )
             return text, f"dashscope/{settings.asr_model}"
     except httpx.TimeoutException as exc:
-        raise TranscriptionError("ASR_TIMEOUT", "DashScope 请求超时", True, "transient") from exc
+        logger.warning("DashScope ASR HTTP timeout phase=%s", phase)
+        raise TranscriptionError(
+            "ASR_TIMEOUT", f"DashScope {phase}请求超时", True, "transient"
+        ) from exc
     except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
         raise TranscriptionError(
             "ASR_PROVIDER_CONFIGURATION_ERROR", "DashScope 服务或公网地址无效", True, "configuration"

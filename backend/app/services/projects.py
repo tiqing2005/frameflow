@@ -367,9 +367,8 @@ def dashboard(session: Session) -> dict:
     asset_total = session.scalar(
         select(func.count()).select_from(Asset).where(Asset.active.is_(True))
     ) or 0
-    running = session.scalar(
-        select(func.count()).select_from(Job).where(Job.status.in_(["queued", "running"]))
-    ) or 0
+    queued = session.scalar(select(func.count()).select_from(Job).where(Job.status == "queued")) or 0
+    running = session.scalar(select(func.count()).select_from(Job).where(Job.status == "running")) or 0
     failed = session.scalar(select(func.count()).select_from(Job).where(Job.status == "failed")) or 0
     ready = session.scalar(select(func.count()).select_from(Project).where(Project.status == "ready")) or 0
     recent_projects = session.scalars(select(Project).order_by(Project.updated_at.desc()).limit(6)).all()
@@ -379,6 +378,7 @@ def dashboard(session: Session) -> dict:
             "projects": project_total,
             "ready_projects": ready,
             "total_assets": asset_total,
+            "queued_jobs": queued,
             "running_jobs": running,
             "failed_jobs": failed,
         },

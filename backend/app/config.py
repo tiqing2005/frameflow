@@ -32,6 +32,7 @@ class Settings:
     database_url: str
     cors_origins: tuple[str, ...] = ("http://localhost:5173", "http://localhost:3000")
     max_upload_bytes: int = 100 * 1024 * 1024
+    worker_concurrency: int = 2
     worker_poll_seconds: float = 0.75
     stage_delay_seconds: float = 0.18
     job_lease_seconds: float = 300.0
@@ -108,6 +109,9 @@ class Settings:
             database_url=database_url,
             cors_origins=cors,
             max_upload_bytes=_int("FRAMEFLOW_MAX_UPLOAD_MB", 100) * 1024 * 1024,
+            worker_concurrency=min(
+                16, max(1, _int("FRAMEFLOW_WORKER_CONCURRENCY", 2))
+            ),
             worker_poll_seconds=_float("FRAMEFLOW_WORKER_POLL_SECONDS", 0.75),
             stage_delay_seconds=_float("FRAMEFLOW_STAGE_DELAY_SECONDS", 0.18),
             job_lease_seconds=max(0.3, _float("FRAMEFLOW_JOB_LEASE_SECONDS", 300.0)),
@@ -119,11 +123,10 @@ class Settings:
             asr_model=os.getenv("FRAMEFLOW_ASR_MODEL", "gpt-4o-mini-transcribe"),
             asr_provider=os.getenv("FRAMEFLOW_ASR_PROVIDER", "auto").strip().lower(),
             asr_timeout=max(0.1, _float("FRAMEFLOW_ASR_TIMEOUT", 120.0)),
-            dashscope_api_key=(
-                os.getenv("DASHSCOPE_API_KEY", "").strip()
-                or os.getenv("OPENAI_API_KEY", "").strip()
-                or None
-            ),
+            # Provider credentials are intentionally isolated. Falling back to
+            # OPENAI_API_KEY can silently send an unrelated vendor credential
+            # to DashScope and turns a missing-key error into a misleading 401.
+            dashscope_api_key=os.getenv("DASHSCOPE_API_KEY", "").strip() or None,
             dashscope_base_url=os.getenv(
                 "FRAMEFLOW_DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
             ).rstrip("/"),

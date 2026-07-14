@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from ..asr import REARMABLE_ASR_ERROR_CODES
@@ -95,16 +95,44 @@ def retry_job(session: Session, job_id: str, request_id: str | None) -> dict:
 
 
 def cancel_job(session: Session, job_id: str, request_id: str | None) -> dict:
+    # A SQLite read transaction cannot safely upgrade after a concurrent
+    # writer commits (SQLITE_BUSY_SNAPSHOT).  Acquire the short write lock
+    # before loading the state so the following CAS observes a current row.
+    if session.get_bind().dialect.name == "sqlite":
+        session.execute(text("BEGIN IMMEDIATE"))
     job = _get_job(session, job_id)
     if job.status == "canceled":
         return get_job_detail(session, job.id)
     if job.status in {"succeeded", "failed"}:
         raise APIError(409, "JOB_NOT_CANCELABLE", "只有排队中或运行中的任务可以取消")
-    job.status = "canceled"
-    job.retryable = False
-    job.finished_at = utcnow()
-    job.lease_owner = None
-    job.lease_expires_at = None
+    # Completion and cancellation can race in separate API/worker sessions.
+    # Make cancellation a compare-and-swap on the durable state rather than
+    # flushing the possibly stale object loaded above.  Whichever transition
+    # commits first wins; cancellation must never overwrite a successful job.
+    result = session.execute(
+        update(Job)
+        .where(Job.id == job.id, Job.status.in_(("queued", "running")))
+        .values(
+            status="canceled",
+            retryable=False,
+            finished_at=utcnow(),
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.expire_all()
+        current = session.get(Job, job.id)
+        if current is None:
+            raise APIError(404, "JOB_NOT_FOUND", "任务不存在")
+        if current.status == "canceled":
+            return get_job_detail(session, current.id)
+        raise APIError(409, "JOB_NOT_CANCELABLE", "只有排队中或运行中的任务可以取消")
+
+    session.expire_all()
+    job = session.get(Job, job.id)
+    assert job is not None
     project = _get_project(session, job.project_id)
     if job.kind == "pipeline":
         project.status = "canceled"

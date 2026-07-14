@@ -52,6 +52,14 @@ FAILURE_CATEGORY_LABELS = {
 MANUALLY_REARMABLE_FAILURE_CATEGORIES = {"configuration", "dependency"}
 
 
+def _transcriber_identity(transcriber: str) -> tuple[str, str]:
+    """Split the ASR adapter trace into stable provider and model fields."""
+    provider, separator, model = transcriber.partition("/")
+    if not separator:
+        return transcriber, transcriber
+    return provider, model
+
+
 class WorkerFailure(Exception):
     def __init__(
         self,
@@ -76,6 +84,7 @@ class DurableWorker:
         self.db = database
         self.settings = settings
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        self.worker_token = hashlib.sha256(self.worker_id.encode("utf-8")).hexdigest()[:12]
         self.stopping = False
         self._claimed_generations: dict[str, int] = {}
         self._timed_out_pipelines: set[threading.Thread] = set()
@@ -99,17 +108,34 @@ class DurableWorker:
             self._isolation_detail = None
         return bool(self._timed_out_pipelines)
 
+    def _isolate_pipeline(self, pipeline: threading.Thread, detail: str) -> None:
+        """Keep this worker slot quarantined until detached work really exits.
+
+        Python cannot safely kill a thread that may be inside an ASR SDK or
+        ffmpeg wrapper.  Once cancellation, lease fencing, or a hard timeout
+        detaches that work from its durable job, retaining the live thread here
+        prevents this worker from claiming another job and exceeding the
+        configured concurrency bound.
+        """
+
+        if not pipeline.is_alive():
+            return
+        self._timed_out_pipelines.add(pipeline)
+        self._isolation_detail = detail
+        self.heartbeat()
+
     def heartbeat(self) -> None:
         now = utcnow()
         isolated = self._refresh_timed_out_pipelines()
         operational_state = "isolated" if isolated else "ready"
         status_detail = self._isolation_detail if isolated else None
         with self.db.session() as session:
-            heartbeat = session.get(WorkerHeartbeat, 1)
+            heartbeat = session.scalar(
+                select(WorkerHeartbeat).where(WorkerHeartbeat.worker_id == self.worker_id)
+            )
             if heartbeat is None:
                 session.add(
                     WorkerHeartbeat(
-                        id=1,
                         worker_id=self.worker_id,
                         heartbeat_at=now,
                         operational_state=operational_state,
@@ -133,15 +159,17 @@ class DurableWorker:
         with self.db.session() as session:
             # SQLite has no SKIP LOCKED. BEGIN IMMEDIATE serializes the very short
             # claim transaction, making the lease transition atomic.
-            if self.settings.database_url.startswith("sqlite"):
+            dialect = session.get_bind().dialect.name
+            if dialect == "sqlite":
                 session.execute(text("BEGIN IMMEDIATE"))
-            exhausted = session.scalars(
-                select(Job).where(
+            exhausted_query = select(Job).where(
                     Job.status == "running",
                     Job.lease_expires_at < now,
                     Job.attempt >= Job.max_attempts,
                 )
-            ).all()
+            if dialect == "postgresql":
+                exhausted_query = exhausted_query.with_for_update(skip_locked=True)
+            exhausted = session.scalars(exhausted_query).all()
             for stale in exhausted:
                 stale.status = "failed"
                 stale.retryable = False
@@ -162,7 +190,7 @@ class DurableWorker:
                         preview.error_message = stale.error_message
                 session.add(JobEvent(job_id=stale.id, stage=stale.stage, progress=stale.progress,
                                      message="任务崩溃恢复次数已耗尽，停止自动恢复", level="error"))
-            job = session.scalar(
+            claim_query = (
                 select(Job)
                 .where(
                     and_(
@@ -176,6 +204,11 @@ class DurableWorker:
                 .order_by(Job.next_run_at, Job.created_at)
                 .limit(1)
             )
+            if dialect == "postgresql":
+                # Multiple PostgreSQL workers can claim in parallel without
+                # waiting on, or observing, a row already selected by another.
+                claim_query = claim_query.with_for_update(skip_locked=True)
+            job = session.scalar(claim_query)
             if job is None:
                 return None
             recovered = job.status == "running"
@@ -252,11 +285,12 @@ class DurableWorker:
             )
             if result.rowcount != 1:
                 return False
-            heartbeat = session.get(WorkerHeartbeat, 1)
+            heartbeat = session.scalar(
+                select(WorkerHeartbeat).where(WorkerHeartbeat.worker_id == self.worker_id)
+            )
             if heartbeat is None:
-                session.add(WorkerHeartbeat(id=1, worker_id=self.worker_id, heartbeat_at=now))
+                session.add(WorkerHeartbeat(worker_id=self.worker_id, heartbeat_at=now))
             else:
-                heartbeat.worker_id = self.worker_id
                 heartbeat.heartbeat_at = now
         return True
 
@@ -323,21 +357,34 @@ class DurableWorker:
                     level=level,
                 )
             )
-            heartbeat = session.get(WorkerHeartbeat, 1)
+            heartbeat = session.scalar(
+                select(WorkerHeartbeat).where(WorkerHeartbeat.worker_id == self.worker_id)
+            )
             if heartbeat is None:
-                session.add(WorkerHeartbeat(id=1, worker_id=self.worker_id, heartbeat_at=now))
+                session.add(WorkerHeartbeat(worker_id=self.worker_id, heartbeat_at=now))
             else:
-                heartbeat.worker_id = self.worker_id
                 heartbeat.heartbeat_at = now
         if self.settings.stage_delay_seconds > 0:
             time.sleep(self.settings.stage_delay_seconds)
 
     def _consume_fault(self) -> str:
         with self.db.session() as session:
-            control = session.get(FaultControl, 1)
+            dialect = session.get_bind().dialect.name
+            if dialect == "sqlite":
+                # Serialize the read-and-clear transition; without the early
+                # write lock two SQLite workers could both read the same mode.
+                session.execute(text("BEGIN IMMEDIATE"))
+                control = session.get(FaultControl, 1)
+            else:
+                query = select(FaultControl).where(FaultControl.id == 1)
+                if dialect == "postgresql":
+                    query = query.with_for_update()
+                control = session.scalar(query)
             if control is None:
                 return "none"
-            mode = control.next_mode
+            # Clear stale controls even when demo mode is disabled, but never
+            # expose their value to a production execution.
+            mode = control.next_mode if self.settings.demo_mode else "none"
             control.next_mode = "none"
             control.updated_at = utcnow()
             return mode
@@ -395,6 +442,7 @@ class DurableWorker:
         assets: list[dict],
         enhancement: SemanticEnhancement,
         transcriber: str,
+        transcription_duration_ms: int,
         matching_duration_ms: int,
     ) -> None:
         with self.db.session() as session:
@@ -425,6 +473,34 @@ class DurableWorker:
                 session.add(segment)
                 created_segments.append(segment)
             session.flush()
+
+            if source.kind in {"audio", "video"}:
+                asr_provider, asr_model = _transcriber_identity(transcriber)
+                session.add(
+                    AIRun(
+                        project_id=project.id,
+                        job_id=job.id,
+                        operation="speech_transcription",
+                        provider=asr_provider,
+                        model=asr_model,
+                        prompt_version="speech-transcription-v1",
+                        input_hash=stable_hash(
+                            source.sha256,
+                            transcriber,
+                            "speech-transcription-v1",
+                        ),
+                        status="succeeded",
+                        degraded=False,
+                        duration_ms=transcription_duration_ms,
+                        output_summary_json=dumps(
+                            {
+                                "source_kind": source.kind,
+                                "characters": len(transcript),
+                                "mime_type": source.mime_type,
+                            }
+                        ),
+                    )
+                )
 
             semantic_run = AIRun(
                 project_id=project.id,
@@ -665,7 +741,8 @@ class DurableWorker:
             output_dir = self.settings.data_dir / "media" / "previews" / plan["project_id"]
             output_path = output_dir / f"{plan['input_hash'][:20]}.mp4"
             temporary_output_path = output_dir / (
-                f".{plan['input_hash'][:20]}.{job_id}.rendering.mp4"
+                f".{plan['input_hash'][:20]}.{job_id}.g{generation}."
+                f"{self.worker_token}.rendering.mp4"
             )
             temporary_output_path.unlink(missing_ok=True)
             try:
@@ -697,9 +774,30 @@ class DurableWorker:
                     raise WorkerFailure("PREVIEW_NOT_FOUND", "预览任务记录不存在")
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(temporary_output_path, output_path)
+                published_stat = output_path.stat()
+                published_identity = (
+                    published_stat.st_dev,
+                    published_stat.st_ino,
+                    published_stat.st_size,
+                    published_stat.st_mtime_ns,
+                )
 
                 def cleanup_failed_publish(_session) -> None:
-                    output_path.unlink(missing_ok=True)
+                    # Another worker may have atomically published the same
+                    # content-addressed preview after us.  A rollback may only
+                    # remove the exact file generation this execution moved.
+                    try:
+                        current = output_path.stat()
+                    except FileNotFoundError:
+                        return
+                    current_identity = (
+                        current.st_dev,
+                        current.st_ino,
+                        current.st_size,
+                        current.st_mtime_ns,
+                    )
+                    if current_identity == published_identity:
+                        output_path.unlink(missing_ok=True)
 
                 event.listen(session, "after_rollback", cleanup_failed_publish, once=True)
                 result["output_path"] = str(output_path)
@@ -797,7 +895,12 @@ class DurableWorker:
                 raise WorkerFailure("DEMO_JOB_FAILURE", "演示故障：本次处理按计划失败，可点击重试", True)
 
             self._stage(job_id, generation, "transcribing", 30, "正在获取或整理原始字幕")
+            transcription_started = time.perf_counter()
             transcript, transcriber = self._transcribe(source)
+            transcription_duration_ms = max(
+                0,
+                int((time.perf_counter() - transcription_started) * 1_000),
+            )
             transcript = transcript.strip()
             if len(transcript) < 2:
                 raise WorkerFailure("TRANSCRIPT_EMPTY", "输入中没有可处理的字幕内容")
@@ -877,6 +980,7 @@ class DurableWorker:
                 assets,
                 enhancement,
                 transcriber,
+                transcription_duration_ms,
                 matching_duration_ms,
             )
         except JobCanceled:
@@ -936,17 +1040,21 @@ class DurableWorker:
         try:
             while not completed.wait(0.05):
                 if lease_lost.is_set():
+                    self._isolate_pipeline(
+                        pipeline,
+                        f"job {job_id} was canceled or lost its lease; "
+                        "waiting for its execution thread to exit",
+                    )
                     return
                 if self.stopping:
                     self._abandon_execution(job_id, generation)
                     return
                 if time.monotonic() >= deadline:
-                    self._timed_out_pipelines.add(pipeline)
-                    self._isolation_detail = (
+                    self._isolate_pipeline(
+                        pipeline,
                         f"job {job_id} exceeded the hard timeout; "
-                        "waiting for its execution thread to exit"
+                        "waiting for its execution thread to exit",
                     )
-                    self.heartbeat()
                     self._fail(
                         job_id,
                         generation,
@@ -989,8 +1097,12 @@ def main() -> None:
     )
     settings = Settings.from_env()
     database = Database(settings)
-    database.initialize()
-    worker = DurableWorker(database, settings)
+    if (
+        os.getenv("FRAMEFLOW_DATABASE_INITIALIZED") != "1"
+        and os.getenv("FRAMEFLOW_RUNTIME_INITIALIZED") != "1"
+    ):
+        database.initialize()
+    worker = DurableWorker(database, settings, worker_id=os.getenv("FRAMEFLOW_WORKER_ID") or None)
 
     def stop(_signum, _frame):
         worker.stop()

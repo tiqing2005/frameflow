@@ -26,42 +26,95 @@ def live_payload() -> dict:
     }
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def ready_payload(session: Session, settings: Settings) -> dict:
     session.execute(text("SELECT 1"))
     asset_count = session.scalar(
         select(func.count()).select_from(Asset).where(Asset.active.is_(True))
     ) or 0
-    heartbeat = session.get(WorkerHeartbeat, 1)
-    worker_online = False
-    worker_state = "dead"
-    current_job_id = None
-    last_heartbeat = None
-    status_detail = None
-    if heartbeat:
-        value = heartbeat.heartbeat_at
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - value.astimezone(timezone.utc)).total_seconds()
-        worker_online = age < max(15.0, settings.worker_poll_seconds * 8)
-        last_heartbeat = value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-        if worker_online:
-            status_detail = heartbeat.status_detail
-            active_job = session.scalar(
-                select(Job)
-                .where(
-                    Job.status == "running",
-                    Job.lease_owner == heartbeat.worker_id,
-                    Job.lease_expires_at >= datetime.now(timezone.utc),
-                )
-                .order_by(Job.started_at, Job.created_at)
-                .limit(1)
+    now = datetime.now(timezone.utc)
+    online_cutoff_seconds = max(15.0, settings.worker_poll_seconds * 8)
+    heartbeats = session.scalars(
+        select(WorkerHeartbeat).order_by(WorkerHeartbeat.heartbeat_at.desc())
+    ).all()
+    online_heartbeats = [
+        heartbeat
+        for heartbeat in heartbeats
+        if (now - _as_utc(heartbeat.heartbeat_at)).total_seconds()
+        < online_cutoff_seconds
+    ]
+    online_worker_ids = [heartbeat.worker_id for heartbeat in online_heartbeats]
+    active_jobs = (
+        session.scalars(
+            select(Job)
+            .where(
+                Job.status == "running",
+                Job.lease_owner.in_(online_worker_ids),
+                Job.lease_expires_at >= now,
             )
-            worker_state = (
-                "isolated"
-                if heartbeat.operational_state == "isolated"
-                else ("busy" if active_job else "idle")
-            )
-            current_job_id = active_job.id if active_job else None
+            .order_by(Job.started_at, Job.created_at)
+        ).all()
+        if online_worker_ids
+        else []
+    )
+    active_jobs_by_worker: dict[str, list[Job]] = {}
+    for job in active_jobs:
+        if job.lease_owner is not None:
+            active_jobs_by_worker.setdefault(job.lease_owner, []).append(job)
+
+    worker_instances = []
+    for heartbeat in online_heartbeats:
+        jobs = active_jobs_by_worker.get(heartbeat.worker_id, [])
+        isolated = heartbeat.operational_state == "isolated"
+        worker_instances.append(
+            {
+                "worker_id": heartbeat.worker_id,
+                "state": "isolated" if isolated else ("busy" if jobs else "idle"),
+                "accepting_jobs": not isolated,
+                "detail": heartbeat.status_detail,
+                "active_job_ids": [job.id for job in jobs],
+                "last_heartbeat": _as_utc(heartbeat.heartbeat_at)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+        )
+
+    online_workers = len(online_heartbeats)
+    accepting_workers = sum(
+        heartbeat.operational_state != "isolated"
+        for heartbeat in online_heartbeats
+    )
+    busy_workers = len(active_jobs_by_worker)
+    active_job_ids = [job.id for job in active_jobs]
+    isolated_details = [
+        heartbeat.status_detail
+        for heartbeat in online_heartbeats
+        if heartbeat.operational_state == "isolated" and heartbeat.status_detail
+    ]
+    worker_online = online_workers > 0
+    if not worker_online:
+        worker_state = "dead"
+    elif accepting_workers == 0:
+        worker_state = "isolated"
+    elif accepting_workers < online_workers:
+        worker_state = "degraded"
+    elif active_jobs:
+        worker_state = "busy"
+    else:
+        worker_state = "idle"
+    last_heartbeat = (
+        _as_utc(heartbeats[0].heartbeat_at)
+        .isoformat()
+        .replace("+00:00", "Z")
+        if heartbeats
+        else None
+    )
+    status_detail = "; ".join(isolated_details) or None
     checks = {
         "database": "ok",
         "seed_assets": {
@@ -72,13 +125,23 @@ def ready_payload(session: Session, settings: Settings) -> dict:
         "worker": {
             "online": worker_online,
             "state": worker_state,
-            "accepting_jobs": worker_online and worker_state != "isolated",
+            "accepting_jobs": accepting_workers > 0,
             "detail": status_detail,
-            "current_job_id": current_job_id,
+            "current_job_id": active_job_ids[0] if active_job_ids else None,
             "last_heartbeat": last_heartbeat,
+            "online_workers": online_workers,
+            "active_job_ids": active_job_ids,
+            "capacity": {
+                "configured": settings.worker_concurrency,
+                "online": online_workers,
+                "accepting": accepting_workers,
+                "busy": busy_workers,
+                "available": max(0, accepting_workers - busy_workers),
+            },
+            "instances": worker_instances,
         },
     }
-    if asset_count < MINIMUM_ACTIVE_ASSETS or not worker_online or worker_state == "isolated":
+    if asset_count < MINIMUM_ACTIVE_ASSETS or accepting_workers == 0:
         raise APIError(
             503,
             "NOT_READY",
