@@ -311,7 +311,7 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 | ID | 场景 | 目标 |
 | --- | --- | --- |
 | PERF-01 | 1,000 字中文 + 12 素材，本地规则 | 普通开发机上在 10 秒内达到终态，无内存异常增长 |
-| PERF-02 | 连续创建 5 个文本任务 | API 均快速返回 202，单 Worker 顺序处理，无任务丢失/结果串项 |
+| PERF-02 | 连续创建 5 个文本任务 | API 均快速返回 202，至少两个不同 Job 同时进入 running，无重复领取、任务丢失或结果串项 |
 | PERF-03 | 100 次轮询 GET Job | 无 SQLite locked 错误，进度单调、终态稳定 |
 | PERF-04 | 100 MB 上限附近文件 | 不一次性读入前端 JS 内存；超限被及时拒绝 |
 

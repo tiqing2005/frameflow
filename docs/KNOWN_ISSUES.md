@@ -32,11 +32,11 @@
 
 ## 3. 工程边界
 
-### KI-05：SQLite 和单 Worker 不适合水平扩容
+### KI-05：SQLite 和单机有界 Worker 池不适合水平扩容
 
-- **影响**：当前吞吐量受单 Worker 和单持久卷限制，不应同时启动多个跨机写实例。
-- **当前处理**：WAL、`busy_timeout`、持久化队列、原子领取与租约恢复，完成 Demo 层面可靠背压。
-- **后续方向**：PostgreSQL + 业务 outbox + Redis/RabbitMQ 队列，再开启多 Worker。
+- **影响**：当前默认可同时执行两个任务，但吞吐量仍受 SQLite 单写者、容器资源和单持久卷限制，不应同时启动多个跨机写实例。
+- **当前处理**：WAL、`busy_timeout`、持久化队列、原子领取、独立 Worker 心跳、租约恢复与有界进程池，完成单机低并发下的可靠背压。
+- **后续方向**：PostgreSQL + 业务 outbox + Redis/RabbitMQ 队列 + 对象存储，再进行横向 Worker 扩容。
 
 ### KI-06：上传文件使用本地持久卷
 

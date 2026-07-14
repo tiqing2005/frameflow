@@ -1,8 +1,8 @@
 # FrameFlow 单机部署手册
 
-本文描述随仓库交付的 Linux VPS 方案：一个 FrameFlow 容器运行 FastAPI API 与一个持久化 Worker。默认可由 Caddy 容器负责反向代理和自动 HTTPS；如果宿主机已经运行 Nginx（例如同机承载其他域名），使用 `external-nginx` 覆盖，让 FrameFlow 仅监听宿主机回环地址 `127.0.0.1:8080`，不抢占 80/443。SQLite、上传文件、种子素材和可选模型统一保存在 Docker 具名卷的 `/data`。
+本文描述随仓库交付的 Linux VPS 方案：一个 FrameFlow 容器运行 FastAPI API 与有界持久化 Worker 进程池，默认并发度为 2。默认可由 Caddy 容器负责反向代理和自动 HTTPS；如果宿主机已经运行 Nginx（例如同机承载其他域名），使用 `external-nginx` 覆盖，让 FrameFlow 仅监听宿主机回环地址 `127.0.0.1:8080`，不抢占 80/443。SQLite、上传文件、种子素材和可选模型统一保存在 Docker 具名卷的 `/data`。
 
-> 适用边界：作品演示、招聘作业验收和低并发单机服务。它不是多租户生产集群方案，不应横向扩容多个 SQLite 写实例。
+> 适用边界：作品演示、招聘作业验收和低并发单机服务。`FRAMEFLOW_WORKER_CONCURRENCY` 可配置同一容器内的并发任务数（1–16），但它不是多租户生产集群方案，不应横向扩容多个 SQLite 写实例。
 
 ## 1. 前置条件
 
@@ -323,3 +323,4 @@ bash deploy/smoke.sh
 - 删除、上传和演示故障注入接口由管理员会话统一保护，但没有更细的资源归属权限。公开面试 Demo 应保持默认 Caddy Basic Auth，并建议叠加云防火墙白名单、VPN/Tailscale；不要把它当作匿名公共 SaaS。
 - Caddy/Nginx 安全响应头不能替代应用鉴权与上传内容治理。
 - 多实例、高可用或大规模素材库应迁移到 PostgreSQL、对象存储、专用队列与独立 Worker；不要让多个容器并发写同一个 SQLite 文件。
+- 当前 2 CPU / 3 GiB 的默认容器资源建议保持 `FRAMEFLOW_WORKER_CONCURRENCY=2`；本地 ASR 或多个 ffmpeg 预览会争用 CPU/内存，提高并发前必须压测。

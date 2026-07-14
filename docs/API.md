@@ -244,13 +244,23 @@
       "state": "idle",
       "accepting_jobs": true,
       "detail": null,
-      "last_heartbeat": "2026-07-13T08:30:00Z"
+      "last_heartbeat": "2026-07-13T08:30:00Z",
+      "online_workers": 2,
+      "active_job_ids": [],
+      "capacity": {
+        "configured": 2,
+        "online": 2,
+        "accepting": 2,
+        "busy": 0,
+        "available": 2
+      },
+      "instances": []
     }
   }
 }
 ```
 
-未就绪返回 HTTP 503 和统一错误体。当 Worker 因不可终止的超时线程进入隔离状态时，`checks.worker.state` 为 `isolated`、`accepting_jobs` 为 `false`，并在 `detail` 中给出原因。
+未就绪返回 HTTP 503 和统一错误体。部分 Worker 因不可终止的超时线程进入隔离状态时，聚合状态为 `degraded`，其余 Worker 仍可接单；所有在线 Worker 都隔离时状态为 `isolated` 并返回 503。实例详情和活动任务分别见 `instances`、`active_job_ids`。
 
 ## 5. 仪表盘与项目
 
@@ -263,6 +273,7 @@
   "metrics": {
     "projects": 3,
     "total_assets": 12,
+    "queued_jobs": 2,
     "running_jobs": 1,
     "failed_jobs": 0
   },

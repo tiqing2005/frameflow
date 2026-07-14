@@ -168,7 +168,7 @@ pip install -r backend/requirements-embeddings-local.txt
 
 ## 关键取舍与已知边界
 
-- SQLite WAL + 单 Worker 适合单机演示和低并发，不支持多实例共享写入。
+- SQLite WAL + 可配置的有界 Worker 进程池适合单机演示和低并发；默认同时执行 2 个任务，但仍不支持多个容器共享写入同一个 SQLite 文件。
 - 前端轮询持久化任务事件，简单且容易穿过代理；大规模实时任务可升级为 SSE/WebSocket。
 - 小素材库在内存计算 TF-IDF 更透明；规模增长后可迁移向量数据库或搜索服务。
 - 当前版本已有单管理员应用内登录与部署层 Basic Auth，但没有用户注册、项目归属、RBAC 或多租户隔离；进程内限流也不等同于分布式配额。

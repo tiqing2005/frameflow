@@ -1697,7 +1697,7 @@ npm run test:browser</pre>
                 <thead><tr><th>编号</th><th>场景</th><th>目标</th><th>用意</th></tr></thead>
                 <tbody>
                   <tr><td>PERF-01</td><td>1,000 字中文 + 本地规则</td><td>普通开发机 10 秒内达到终态，无异常内存增长</td><td>文本主链性能</td></tr>
-                  <tr><td>PERF-02</td><td>连续创建 5 个文本任务</td><td>API 快速返回 202，单 Worker 顺序处理，无串项</td><td>排队与背压</td></tr>
+                  <tr><td>PERF-02</td><td>连续创建 5 个文本任务</td><td>API 快速返回 202，至少两个 Job 同时执行，无重复领取或串项</td><td>并发与背压</td></tr>
                   <tr><td>PERF-03</td><td>100 次轮询 GET Job</td><td>无 SQLite locked，进度单调，终态稳定</td><td>读写并发稳定性</td></tr>
                   <tr><td>PERF-04</td><td>接近 100MB 上传限制</td><td>超限及时拒绝；前端不一次性解码大文件</td><td>上传资源保护</td></tr>
                 </tbody>
@@ -1750,7 +1750,7 @@ npm run test:browser</pre>
 
         <div class="callout warning">
           <span class="callout-icon">禁止</span>
-          <div><strong>演示中不要这样说</strong><p>不要把 rules 说成“大模型调用”；不要把字符 TF-IDF 说成“神经 Embedding”；没有真实 ASR 时不要说“已自动转写”；一次性故障注入不要说成“真实 AI 刚才宕机”；单 Worker 不要说成“高并发”。</p></div>
+          <div><strong>演示中不要这样说</strong><p>不要把 rules 说成“大模型调用”；不要把字符 TF-IDF 说成“神经 Embedding”；没有真实 ASR 时不要说“已自动转写”；一次性故障注入不要说成“真实 AI 刚才宕机”；默认双路的单机有界并发不要说成“高并发集群”。</p></div>
         </div>
       </section>
 
@@ -1859,7 +1859,7 @@ npm run test:browser</pre>
           <div class="boundary"><i>!</i><div><b>默认 TF-IDF ≠ 神经 Embedding</b><span>默认使用字符 n-gram；只有运行记录显示本地 BGE 或远程 embeddings 时，才能宣称启用了神经向量。</span></div></div>
           <div class="boundary"><i>!</i><div><b>自动标签不是视觉模型识图</b><span>上传素材留空时可由 LLM 或规则分析名称/文本元数据并记录来源；当前不识别真实画面内容。</span></div></div>
           <div class="boundary"><i>!</i><div><b>组合预览不是精确视频剪辑时间轴</b><span>已支持片段时间线和 MP4 预览，但没有帧级裁切、复杂转场、多音轨或专业导出参数。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>单 Worker 不代表高并发</b><span>SQLite WAL + 单 Worker 适合单机 Demo 和低并发可靠排队。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>有界 Worker 池不代表水平扩容</b><span>SQLite WAL + 默认双 Worker 适合单机 Demo 和低并发并行处理。</span></div></div>
           <div class="boundary"><i>!</i><div><b>单管理员登录 ≠ 多租户权限</b><span>已有应用会话、CSRF 与整站 Basic Auth，但没有团队用户、项目归属、RBAC 或租户隔离。</span></div></div>
           <div class="boundary"><i>!</i><div><b>IMAGE_API_* 是预留配置</b><span>当前产品没有业务内图像生成，LLM 也只增强分段、主题和关键词。</span></div></div>
           <div class="boundary"><i>!</i><div><b>素材删除有保护边界</b><span>只能删除未被项目引用的用户上传素材；种子、已引用和最低保底素材会拒绝删除。项目重命名与审计管理页面仍未完成。</span></div></div>

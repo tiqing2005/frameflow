@@ -149,11 +149,13 @@ JobEvent 是只追加时间线，不使用 UPDATE 重写历史。当前状态以
 
 | 列 | 类型 | 语义 |
 | --- | --- | --- |
-| `id` | Integer | singleton PK，当前默认 1 |
-| `worker_id` | String(120) | 当前 Worker 标识 |
+| `id` | Integer | 自增主键，兼容旧版 singleton 行 |
+| `worker_id` | String(120) | 唯一 Worker 标识并建立索引 |
 | `heartbeat_at` | DateTime(TZ) | 最近心跳 |
+| `operational_state` | String(24) | `ready/isolated`，用于聚合可用容量 |
+| `status_detail` | Text | 隔离原因，可空 |
 
-Readiness 可根据心跳时间与配置阈值判断 Worker 是否就绪。它不是多 Worker 注册表；当前产品边界是单 Worker。
+每个 Worker 独立更新自己的心跳行。Readiness 聚合在线、繁忙、隔离和可用 Worker，并返回所有活动 Job ID；过期行不计入在线容量。
 
 ## 5. 匹配、选择与追溯
 
@@ -332,7 +334,7 @@ PRAGMA busy_timeout=10000;
 PRAGMA synchronous=NORMAL;
 ```
 
-同时使用 SQLAlchemy `pool_pre_ping=True`。这些设置只是为单机 API + 单 Worker 提高可靠性，不使 SQLite 变成跨机分布式数据库。
+同时使用 SQLAlchemy `pool_pre_ping=True`。这些设置只是为单机 API + 有界 Worker 池提高可靠性，不使 SQLite 变成跨机分布式数据库。
 
 ## 10. 初始化、迁移与备份
 
