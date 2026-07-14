@@ -134,6 +134,38 @@ class Database:
                         "ON worker_heartbeats (heartbeat_at)"
                     )
                 )
+        elif self.engine.dialect.name == "postgresql":
+            # PostgreSQL is supported by the worker's SKIP LOCKED claim path.
+            # create_all cannot add columns to an existing assets table, so
+            # keep this additive migration symmetrical with the SQLite path.
+            asset_columns = {
+                column["name"] for column in inspect(self.engine).get_columns("assets")
+            }
+            asset_tagging_migrations = {
+                "tagging_status": "VARCHAR(24) NOT NULL DEFAULT 'idle'",
+                "tagging_source": "VARCHAR(24)",
+                "tagging_mode": "VARCHAR(24)",
+                "tagging_generation": "INTEGER NOT NULL DEFAULT 0",
+                "tagging_attempt": "INTEGER NOT NULL DEFAULT 0",
+                "tagging_lease_owner": "VARCHAR(120)",
+                "tagging_lease_expires_at": "TIMESTAMP WITH TIME ZONE",
+                "tagging_requested_at": "TIMESTAMP WITH TIME ZONE",
+                "tagging_started_at": "TIMESTAMP WITH TIME ZONE",
+                "tagging_finished_at": "TIMESTAMP WITH TIME ZONE",
+            }
+            with self.engine.begin() as connection:
+                for name, definition in asset_tagging_migrations.items():
+                    if name not in asset_columns:
+                        connection.execute(
+                            text(f"ALTER TABLE assets ADD COLUMN {name} {definition}")
+                        )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_assets_tagging_claim "
+                        "ON assets (tagging_status, tagging_requested_at, "
+                        "tagging_lease_expires_at)"
+                    )
+                )
         from .seed import seed_assets
 
         with self.session() as session:
