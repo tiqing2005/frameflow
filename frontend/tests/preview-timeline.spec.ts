@@ -84,7 +84,7 @@ function preview(status: 'queued' | 'running' | 'succeeded', progress: number) {
   }
 }
 
-async function mockApi(page: Page, state: { finished: boolean; jobPolls: number; postBodies: unknown[] }) {
+async function mockApi(page: Page, state: { finished: boolean; jobPolls: number; postBodies: unknown[]; stale?: boolean; rematched?: boolean; previewReads?: number }) {
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -93,7 +93,10 @@ async function mockApi(page: Page, state: { finished: boolean; jobPolls: number;
       return
     }
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}/preview`) {
-      await route.fulfill({ json: { preview: state.finished ? preview('succeeded', 100) : null, timeline } })
+      state.previewReads = (state.previewReads || 0) + 1
+      const currentTimeline = state.rematched ? { ...timeline, input_hash: 'timeline-hash-v2' } : timeline
+      const currentPreview = state.finished ? { ...preview('succeeded', 100), input_hash: state.stale ? 'old-timeline-hash' : timeline.input_hash } : null
+      await route.fulfill({ json: { preview: currentPreview, timeline: currentTimeline } })
       return
     }
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}/timeline`) {
@@ -103,6 +106,11 @@ async function mockApi(page: Page, state: { finished: boolean; jobPolls: number;
     if (request.method() === 'POST' && path === `/api/v1/projects/${PROJECT_ID}/preview`) {
       state.postBodies.push(request.postDataJSON())
       await route.fulfill({ status: 202, json: { preview: preview('queued', 0), timeline, idempotent_replay: false } })
+      return
+    }
+    if (request.method() === 'POST' && path === '/api/v1/segments/segment-1/rematch') {
+      state.rematched = true
+      await route.fulfill({ json: segments[0] })
       return
     }
     if (request.method() === 'GET' && path === `/api/v1/jobs/${JOB_ID}`) {
@@ -144,4 +152,29 @@ test('时间线可视化片段并完成预览创建、任务轮询与视频播�
   await expect(output).toBeVisible()
   const hasPageOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
   expect(hasPageOverflow).toBe(false)
+})
+
+test('时间线变化后隐藏旧视频并明确提示重新生成', async ({ page }) => {
+  const state = { finished: true, jobPolls: 0, postBodies: [] as unknown[], stale: true }
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  await expect(timelineSection.getByText('原预览已过期', { exact: false })).toBeVisible()
+  await expect(timelineSection.getByLabel('FrameFlow 组合预览视频')).toHaveCount(0)
+  await timelineSection.getByRole('button', { name: '重新生成预览' }).click()
+  await expect.poll(() => state.postBodies).toEqual([{ force: true }])
+})
+
+test('重新匹配成功后刷新时间线与预览概览', async ({ page }) => {
+  const state = { finished: false, jobPolls: 0, postBodies: [] as unknown[], previewReads: 0 }
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+  await expect.poll(() => state.previewReads).toBeGreaterThanOrEqual(1)
+  const readsBeforeRematch = state.previewReads || 0
+
+  await page.getByTitle('根据当前文本重新匹配').click()
+
+  await expect.poll(() => state.previewReads || 0).toBeGreaterThan(readsBeforeRematch)
+  await expect(page.getByRole('region', { name: '时间线' }).getByText('原预览已过期', { exact: false })).toHaveCount(0)
 })

@@ -195,6 +195,8 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
     const requestProjectId = projectId
     previewPollAbort.current = controller
     let failures = 0
+    let unchangedPolls = 0
+    let lastSnapshot = ''
 
     const poll = async () => {
       let delay = 1200
@@ -202,6 +204,9 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
         const result = await api.job(jobId, { signal: controller.signal, timeoutMs: 10_000 })
         if (controller.signal.aborted || !mountedRef.current || projectIdRef.current !== requestProjectId) return
         failures = 0
+        const snapshot = `${result.job.status}:${result.job.stage || ''}:${result.job.progress ?? ''}`
+        unchangedPolls = snapshot === lastSnapshot ? unchangedPolls + 1 : 0
+        lastSnapshot = snapshot
         setPreviewJob(result.job)
         setPreview((current) => current ? {
           ...current,
@@ -214,6 +219,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
           await loadPreviewOverview(false)
           return
         }
+        delay = Math.min(5000, Math.round(1200 * (1.45 ** Math.min(unchangedPolls, 5))))
       } catch (err) {
         if (isAbortError(err) || controller.signal.aborted || !mountedRef.current || projectIdRef.current !== requestProjectId) return
         failures += 1
@@ -221,6 +227,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
         setPreviewError(`预览任务状态暂时无法更新：${errorMessage(err)}`)
       }
       if (!controller.signal.aborted && mountedRef.current && projectIdRef.current === requestProjectId) {
+        if (document.hidden) delay = Math.max(delay, 15_000)
         previewPollTimer.current = window.setTimeout(poll, delay)
       }
     }
@@ -381,7 +388,8 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
 
   const generatePreview = async () => {
     const activePreviewJob = previewJob || preview?.job
-    if (previewCreating || ['queued', 'running'].includes(activePreviewJob?.status || preview?.status || '')) return
+    const stalePreview = Boolean(preview && timeline && preview.input_hash !== timeline.input_hash)
+    if (previewCreating || (!stalePreview && ['queued', 'running'].includes(activePreviewJob?.status || preview?.status || ''))) return
     if (!await ensureSaved()) return
     const operationProjectId = projectIdRef.current
     previewLoadAbort.current?.abort()
@@ -504,6 +512,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
         if (!mountedRef.current || projectIdRef.current !== operationProjectId) return
         const updated = 'segment' in result ? result.segment : result
         updateSegmentById(segmentId, (segment) => ({ ...segment, ...updated }))
+        await loadPreviewOverview(false)
         toast('已根据当前文本重新生成候选', 'success')
       } catch (err) {
         if (mountedRef.current && projectIdRef.current === operationProjectId) toast(errorMessage(err), 'error')
@@ -614,7 +623,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
             {saveState === 'saving' ? <LoaderCircle size={15} className="spin" /> : saveState === 'error' ? <AlertTriangle size={15} /> : <Check size={15} />}
             {saveState === 'saving' ? '保存中' : saveState === 'dirty' ? '等待保存' : saveState === 'error' ? '保存失败' : '已自动保存'}
           </span>
-          <button type="button" className="button button-secondary button-small" disabled={saveState !== 'dirty' && saveState !== 'error'} onClick={() => void save()}><Save size={15} /> 保存</button>
+          <button type="button" className={`button button-secondary button-small${saveState === 'error' ? ' mobile-save-retry' : ''}`} disabled={saveState !== 'dirty' && saveState !== 'error'} onClick={() => void save()}><Save size={15} /> {saveState === 'error' ? '重试保存' : '保存'}</button>
         </div>
       </header>
 
@@ -793,8 +802,9 @@ function TimelinePreview({
   onReload: () => void
 }) {
   const status = job?.status || preview?.status || ''
-  const running = creating || status === 'queued' || status === 'running'
-  const succeeded = status === 'succeeded' && Boolean(preview?.output_url)
+  const stale = Boolean(preview && timeline && preview.input_hash !== timeline.input_hash)
+  const running = creating || (!stale && (status === 'queued' || status === 'running'))
+  const succeeded = !stale && status === 'succeeded' && Boolean(preview?.output_url)
   const failed = status === 'failed' || status === 'canceled'
   const progress = creating ? 2 : Math.max(2, Math.min(100, job?.progress ?? (succeeded ? 100 : 4)))
   const outputUrl = mediaUrl(preview?.output_url)
@@ -839,6 +849,10 @@ function TimelinePreview({
           <div><span>{job?.stage === 'preview_rendering' ? '正在组合画面与字幕' : job?.stage === 'preview_finalizing' ? '正在保存预览视频' : '正在准备组合预览'}</span><strong>{progress}%</strong></div>
           <i><span style={{ width: `${progress}%` }} /></i>
         </div>
+      )}
+
+      {stale && !running && (
+        <div className="timeline-stale" role="status"><AlertTriangle size={16} /><span>字幕、顺序或素材已更新，原预览已过期，请重新生成。</span></div>
       )}
 
       {succeeded && outputUrl && (

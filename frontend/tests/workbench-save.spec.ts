@@ -247,6 +247,33 @@ test('保存失败时保留草稿并阻止切换和重新匹配', async ({ page 
   await expect(editor).toHaveValue('不能丢失的失败草稿')
 })
 
+test('移动端保存失败后提供可见的重试按钮并可恢复保存', async ({ page }) => {
+  let patchCalls = 0
+  await mockApi(page, async (route, body, segmentId) => {
+    patchCalls += 1
+    if (patchCalls === 1) {
+      await route.fulfill({
+        status: 500,
+        json: { code: 'SAVE_FAILED', message: '模拟保存失败', retryable: true },
+      })
+      return
+    }
+    await route.fulfill({ json: successfulSegment(body, segmentId) })
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/projects/project-1')
+
+  await page.getByLabel('字幕文本').fill('移动端需要重试的草稿')
+  await expect(page.getByText('保存失败', { exact: true })).toBeVisible()
+  const retry = page.getByRole('button', { name: '重试保存' })
+  await expect(retry).toBeVisible()
+  await retry.click()
+
+  await expect.poll(() => patchCalls).toBe(2)
+  await expect(page.getByText('已自动保存', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('字幕文本')).toHaveValue('移动端需要重试的草稿')
+})
+
 test('409 冲突保留本地草稿、显示冲突提示并阻止离开', async ({ page }) => {
   await mockApi(page, async (route) => {
     await route.fulfill({
