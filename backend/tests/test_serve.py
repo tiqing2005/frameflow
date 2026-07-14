@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app import image_worker as image_worker_module
 from app import serve, worker as worker_module
 from app.config import Settings
 
@@ -39,7 +40,8 @@ def test_worker_monitor_ignores_expected_shutdown(monkeypatch):
 
 def test_runtime_is_initialized_before_worker_and_api(monkeypatch):
     events: list[object] = []
-    settings = SimpleNamespace(worker_concurrency=2)
+    wait_timeouts: list[float] = []
+    settings = SimpleNamespace(worker_concurrency=2, image_timeout=180.0)
 
     class FakeEngine:
         def dispose(self):
@@ -64,7 +66,7 @@ def test_runtime_is_initialized_before_worker_and_api(monkeypatch):
             events.append(f"terminate-{self.slot}")
 
         def wait(self, timeout):
-            assert 0 <= timeout <= 10
+            wait_timeouts.append(timeout)
             events.append(f"wait-{self.slot}")
 
         def kill(self):
@@ -77,17 +79,32 @@ def test_runtime_is_initialized_before_worker_and_api(monkeypatch):
             assert kwargs["name"] in {
                 "frameflow-worker-monitor-1",
                 "frameflow-worker-monitor-2",
+                "frameflow-image-worker-monitor",
             }
-            self.slot = kwargs["name"].rsplit("-", 1)[-1]
+            self.slot = (
+                "image"
+                if kwargs["name"] == "frameflow-image-worker-monitor"
+                else kwargs["name"].rsplit("-", 1)[-1]
+            )
 
         def start(self):
             events.append(f"monitor-{self.slot}")
 
     def fake_popen(command, *, env):
-        assert command == [sys.executable, "-m", "app.worker"]
-        slot = len([event for event in events if str(event).startswith("popen-")]) + 1
-        assert env["FRAMEFLOW_WORKER_ID"] == f"test-host:{slot}"
         assert env["FRAMEFLOW_DATABASE_INITIALIZED"] == "1"
+        if command == [sys.executable, "-m", "app.image_worker"]:
+            assert env["FRAMEFLOW_IMAGE_WORKER_ID"] == "test-host:image:1"
+            events.append("popen-image")
+            return FakeWorker("image")
+        assert command == [sys.executable, "-m", "app.worker"]
+        slot = len(
+            [
+                event
+                for event in events
+                if str(event).startswith("popen-") and event != "popen-image"
+            ]
+        ) + 1
+        assert env["FRAMEFLOW_WORKER_ID"] == f"test-host:{slot}"
         events.append(f"popen-{slot}")
         return FakeWorker(slot)
 
@@ -108,12 +125,18 @@ def test_runtime_is_initialized_before_worker_and_api(monkeypatch):
         "monitor-1",
         "popen-2",
         "monitor-2",
+        "popen-image",
+        "monitor-image",
         "uvicorn",
         "terminate-1",
         "terminate-2",
+        "terminate-image",
         "wait-1",
         "wait-2",
+        "wait-image",
     ]
+    assert len(wait_timeouts) == 3
+    assert all(200 <= timeout <= 210 for timeout in wait_timeouts)
 
 
 @pytest.mark.parametrize(
@@ -166,6 +189,54 @@ def test_worker_skips_reinitialization_only_for_parent_started_processes(
     monkeypatch.setattr(worker_module.logging, "basicConfig", lambda **_kwargs: None)
 
     worker_module.main()
+
+    assert ("initialize" in events) is expects_initialize
+    assert events[-1] == "run"
+
+
+@pytest.mark.parametrize(
+    ("parent_marker", "expects_initialize"),
+    [(None, True), ("FRAMEFLOW_DATABASE_INITIALIZED", False)],
+)
+def test_image_worker_skips_reinitialization_only_for_parent_started_processes(
+    monkeypatch, parent_marker, expects_initialize
+):
+    events = []
+    settings = object()
+
+    class FakeDatabase:
+        def __init__(self, received_settings):
+            assert received_settings is settings
+
+        def initialize(self):
+            events.append("initialize")
+
+    class FakeImageWorker:
+        def __init__(self, database, received_settings, worker_id):
+            assert isinstance(database, FakeDatabase)
+            assert received_settings is settings
+            assert worker_id == "image-slot-1"
+
+        def stop(self):
+            pass
+
+        def run_forever(self):
+            events.append("run")
+
+    monkeypatch.delenv("FRAMEFLOW_DATABASE_INITIALIZED", raising=False)
+    monkeypatch.delenv("FRAMEFLOW_RUNTIME_INITIALIZED", raising=False)
+    if parent_marker:
+        monkeypatch.setenv(parent_marker, "1")
+    monkeypatch.setenv("FRAMEFLOW_IMAGE_WORKER_ID", "image-slot-1")
+    monkeypatch.setattr(image_worker_module.Settings, "from_env", lambda: settings)
+    monkeypatch.setattr(image_worker_module, "Database", FakeDatabase)
+    monkeypatch.setattr(image_worker_module, "DurableImageWorker", FakeImageWorker)
+    monkeypatch.setattr(image_worker_module.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        image_worker_module.logging, "basicConfig", lambda **_kwargs: None
+    )
+
+    image_worker_module.main()
 
     assert ("initialize" in events) is expects_initialize
     assert events[-1] == "run"

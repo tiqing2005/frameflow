@@ -38,7 +38,11 @@ function Invoke-RestMethod {
 function New-OpenApiSpec {
     param(
         [switch]$OmitLogin,
-        [switch]$OmitDelete
+        [switch]$OmitDelete,
+        [switch]$OmitTimelineTiming,
+        [switch]$OmitSegmentTiming,
+        [switch]$OmitImageGeneration,
+        [switch]$OmitSegmentImageGeneration
     )
 
     $paths = [ordered]@{
@@ -48,6 +52,26 @@ function New-OpenApiSpec {
             post = [pscustomobject]@{}
         }
         '/api/v1/auth/session' = [pscustomobject]@{ get = [pscustomobject]@{} }
+    }
+    if (-not $OmitTimelineTiming) {
+        $paths['/api/v1/projects/{project_id}/timeline/timing'] = [pscustomobject]@{
+            put = [pscustomobject]@{}
+        }
+    }
+    if (-not $OmitSegmentTiming) {
+        $paths['/api/v1/segments/{segment_id}/timing'] = [pscustomobject]@{
+            patch = [pscustomobject]@{}
+        }
+    }
+    if (-not $OmitImageGeneration) {
+        $paths['/api/v1/image-generations'] = [pscustomobject]@{
+            post = [pscustomobject]@{}
+        }
+    }
+    if (-not $OmitSegmentImageGeneration) {
+        $paths['/api/v1/segments/{segment_id}/image-generations'] = [pscustomobject]@{
+            post = [pscustomobject]@{}
+        }
     }
     if (-not $OmitLogin) {
         $paths['/api/v1/auth/login'] = [pscustomobject]@{ post = [pscustomobject]@{} }
@@ -65,7 +89,11 @@ function New-OpenApiSpec {
 $cases = @(
     @{ Name = "complete current API"; Spec = (New-OpenApiSpec); Expected = $true },
     @{ Name = "missing login route"; Spec = (New-OpenApiSpec -OmitLogin); Expected = $false },
-    @{ Name = "missing asset delete method"; Spec = (New-OpenApiSpec -OmitDelete); Expected = $false }
+    @{ Name = "missing asset delete method"; Spec = (New-OpenApiSpec -OmitDelete); Expected = $false },
+    @{ Name = "missing timeline timing route"; Spec = (New-OpenApiSpec -OmitTimelineTiming); Expected = $false },
+    @{ Name = "missing segment timing route"; Spec = (New-OpenApiSpec -OmitSegmentTiming); Expected = $false },
+    @{ Name = "missing image generation route"; Spec = (New-OpenApiSpec -OmitImageGeneration); Expected = $false },
+    @{ Name = "missing segment image generation route"; Spec = (New-OpenApiSpec -OmitSegmentImageGeneration); Expected = $false }
 )
 
 foreach ($case in $cases) {

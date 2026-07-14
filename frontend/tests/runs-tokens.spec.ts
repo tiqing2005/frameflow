@@ -102,6 +102,63 @@ test('API 明确返回的零 Token 保留为真实的 0', async ({ page }) => {
   await expect(tokenMetric.locator('strong')).toHaveText('0')
   await page.getByRole('button', { name: /零 Token 模型调用/ }).click()
   await expect(page.locator('.run-detail').getByText('0 输入 · 0 输出 · 0 总计')).toBeVisible()
+  const failedMetric = page.getByRole('button', { name: /失败调用/ })
+  await expect(failedMetric).toBeDisabled()
+  await expect(failedMetric.locator('strong')).toHaveText('0')
+})
+
+test('失败调用填满第五个指标并可切换失败记录筛选', async ({ page }) => {
+  await mockRuns(page, [
+    {
+      id: 'successful-run',
+      operation: 'semantic_segmentation',
+      status: 'succeeded',
+      created_at: createdAt,
+    },
+    {
+      id: 'degraded-run',
+      operation: 'asset_matching',
+      status: 'degraded',
+      degraded: true,
+      created_at: createdAt,
+    },
+    {
+      id: 'preview-failure',
+      operation: 'preview_failure',
+      status: 'failed',
+      created_at: createdAt,
+    },
+    {
+      id: 'pipeline-failure',
+      operation: 'pipeline_failure',
+      status: 'failed',
+      created_at: createdAt,
+    },
+  ])
+
+  await page.goto('/runs')
+
+  const metricGrid = page.locator('.run-metrics')
+  await expect(metricGrid.locator('.metric-card')).toHaveCount(5)
+  const failedMetric = page.getByRole('button', { name: /失败调用/ })
+  await expect(failedMetric.locator('strong')).toHaveText('2')
+  await expect(page.locator('.run-row')).toHaveCount(4)
+
+  await failedMetric.click()
+  await expect(failedMetric).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('.run-row')).toHaveCount(2)
+  await expect(page.locator('.run-list')).toContainText('预览渲染失败')
+  await expect(page.locator('.run-list')).toContainText('内容处理失败')
+  await expect(page.locator('.run-list')).not.toContainText('字幕语义增强')
+  await expect(page.locator('.result-count')).toHaveText('2 条失败')
+
+  await failedMetric.click()
+  await expect(failedMetric).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.locator('.run-row')).toHaveCount(4)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const hasPageOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
+  expect(hasPageOverflow).toBe(false)
 })
 
 test('运行记录明确展示 DashScope 转写和 DeepSeek 语义增强', async ({ page }) => {
