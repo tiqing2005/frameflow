@@ -9,6 +9,7 @@ from app.auth import COOKIE_NAME, hash_password, verify_password
 from app.config import Settings
 from app.main import create_app
 from app.models import AuthIdentity
+from app.routers.auth import _attempts
 
 
 def auth_client(tmp_path: Path) -> TestClient:
@@ -72,6 +73,73 @@ def test_login_session_csrf_and_logout(tmp_path: Path):
         )
         assert logout.status_code == 200
         assert client.get("/api/v1/dashboard").status_code == 401
+
+
+def test_login_limit_counts_only_failures_clears_on_success_and_reports_retry_after(
+    tmp_path: Path, monkeypatch
+):
+    clock = [10_000.0]
+    monkeypatch.setattr("app.routers.auth.time.monotonic", lambda: clock[0])
+    _attempts.clear()
+
+    try:
+        with auth_client(tmp_path) as client:
+            for expected_remaining in (9, 8, 7, 6):
+                invalid = client.post(
+                    "/api/v1/auth/login",
+                    json={"username": "reviewer", "password": "wrong-password"},
+                )
+                assert invalid.status_code == 401
+                assert invalid.json()["details"]["attempts_remaining"] == expected_remaining
+
+            # A valid credential is still accepted before the failure threshold,
+            # and the successful login clears the caller's failure history.
+            success = client.post(
+                "/api/v1/auth/login",
+                json={"username": "reviewer", "password": "correct-demo-password"},
+            )
+            assert success.status_code == 200
+
+            for expected_remaining in (9, 8, 7, 6, 5, 4, 3, 2, 1, 0):
+                invalid = client.post(
+                    "/api/v1/auth/login",
+                    json={"username": "reviewer", "password": "wrong-password"},
+                )
+                assert invalid.status_code == 401
+                assert invalid.json()["details"]["attempts_remaining"] == expected_remaining
+
+            # Even after reaching the invalid-attempt threshold, the correct
+            # password must immediately recover access and clear the bucket.
+            recovered_with_correct_password = client.post(
+                "/api/v1/auth/login",
+                json={"username": "reviewer", "password": "correct-demo-password"},
+            )
+            assert recovered_with_correct_password.status_code == 200
+
+            for expected_remaining in (9, 8, 7, 6, 5, 4, 3, 2, 1, 0):
+                invalid = client.post(
+                    "/api/v1/auth/login",
+                    json={"username": "reviewer", "password": "wrong-password"},
+                )
+                assert invalid.status_code == 401
+                assert invalid.json()["details"]["attempts_remaining"] == expected_remaining
+
+            locked_invalid = client.post(
+                "/api/v1/auth/login",
+                json={"username": "reviewer", "password": "still-wrong"},
+            )
+            assert locked_invalid.status_code == 429
+            assert locked_invalid.headers["retry-after"] == "60"
+            assert locked_invalid.json()["details"]["retry_after_seconds"] == 60
+
+            clock[0] += 61
+            recovered = client.post(
+                "/api/v1/auth/login",
+                json={"username": "reviewer", "password": "correct-demo-password"},
+            )
+            assert recovered.status_code == 200
+    finally:
+        _attempts.clear()
 
 
 def test_first_run_setup_persists_hashed_admin_and_cannot_be_reclaimed(tmp_path: Path):

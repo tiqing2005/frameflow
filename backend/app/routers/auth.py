@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import time
 from collections import defaultdict, deque
 
@@ -23,6 +24,8 @@ from ._deps import SessionDep, SettingsDep
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 _attempts: dict[str, deque[float]] = defaultdict(deque)
+_LOGIN_MAX_FAILURES = 10
+_LOGIN_WINDOW_SECONDS = 60
 
 
 class LoginInput(BaseModel):
@@ -73,14 +76,42 @@ def _client_key(request: Request) -> str:
     return (forwarded or (request.client.host if request.client else "unknown"))[:80]
 
 
+def _active_login_failures(client_key: str, now: float) -> deque[float] | None:
+    bucket = _attempts.get(client_key)
+    if bucket is None:
+        return None
+    while bucket and bucket[0] <= now - _LOGIN_WINDOW_SECONDS:
+        bucket.popleft()
+    if not bucket:
+        _attempts.pop(client_key, None)
+        return None
+    return bucket
+
+
 def _check_login_limit(request: Request) -> None:
     now = time.monotonic()
-    bucket = _attempts[_client_key(request)]
-    while bucket and bucket[0] <= now - 300:
-        bucket.popleft()
-    if len(bucket) >= 5:
-        raise APIError(429, "LOGIN_RATE_LIMITED", "登录尝试过多，请 5 分钟后重试", True)
+    bucket = _active_login_failures(_client_key(request), now)
+    if bucket is None or len(bucket) < _LOGIN_MAX_FAILURES:
+        return
+    retry_after = max(1, math.ceil(_LOGIN_WINDOW_SECONDS - (now - bucket[0])))
+    raise APIError(
+        429,
+        "LOGIN_RATE_LIMITED",
+        f"登录失败次数过多，请在 {retry_after} 秒后重试",
+        True,
+        {"retry_after_seconds": retry_after},
+        {"Retry-After": str(retry_after)},
+    )
+
+
+def _record_login_failure(request: Request) -> int:
+    now = time.monotonic()
+    client_key = _client_key(request)
+    bucket = _active_login_failures(client_key, now)
+    if bucket is None:
+        bucket = _attempts[client_key]
     bucket.append(now)
+    return max(0, _LOGIN_MAX_FAILURES - len(bucket))
 
 
 def _is_loopback_request(request: Request) -> bool:
@@ -170,9 +201,18 @@ def login(payload: LoginInput, request: Request, response: Response, db: Session
         return _payload(request, settings, db, authenticated=True)
     if not credentials_configured(settings, db):
         raise APIError(409, "AUTH_SETUP_REQUIRED", "请先创建本机管理员账号", False)
-    _check_login_limit(request)
+    # Always verify a valid credential first. A reviewer who corrects a typo
+    # must never be locked out of the core workflow by earlier failures.
     if not authenticate(settings, payload.username, payload.password, db=db):
-        raise APIError(401, "INVALID_CREDENTIALS", "用户名或密码错误", False)
+        _check_login_limit(request)
+        attempts_remaining = _record_login_failure(request)
+        raise APIError(
+            401,
+            "INVALID_CREDENTIALS",
+            "用户名或密码错误",
+            False,
+            {"attempts_remaining": attempts_remaining},
+        )
     _attempts.pop(_client_key(request), None)
     session, token = create_session(db, settings)
     _set_session_cookie(response, token, settings)

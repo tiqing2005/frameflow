@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +20,7 @@ class APIError(Exception):
     message: str
     retryable: bool = False
     details: Any | None = None
+    headers: Mapping[str, str] | None = None
 
 
 def request_id(request: Request) -> str:
@@ -52,6 +53,7 @@ def install_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=error_payload(request, exc.code, exc.message, exc.retryable, exc.details),
+            headers=dict(exc.headers) if exc.headers else None,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -81,4 +83,3 @@ def install_error_handlers(app: FastAPI) -> None:
             status_code=500,
             content=error_payload(request, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试", True),
         )
-
