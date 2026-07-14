@@ -1,5 +1,6 @@
-# configure-auth.sh 会复制为 10-basic-auth.caddy，对整个站点启用 Basic Auth。
+# configure-auth.sh 会复制为 10-basic-auth.caddy；仅签名 ASR 临时文件路由豁免认证。
 # 用户名与 bcrypt 哈希来自 deploy/.env；不要把生成文件提交到仓库。
-basic_auth {
+@frameflow_protected not path /api/v1/asr/source/*
+basic_auth @frameflow_protected {
 	{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
 }

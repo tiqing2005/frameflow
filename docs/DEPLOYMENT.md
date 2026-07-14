@@ -142,6 +142,20 @@ docker compose --env-file deploy/.env up -d --build --force-recreate
 
 FrameFlow 调用 `${LLM_BASE_URL}/chat/completions`。模型输出必须通过严格 JSON Schema 校验，并完整保留原字幕；无密钥、超时、HTTP 错误、非法 JSON 或字幕缺失都会自动回退到确定性规则，任务仍可完成，运行记录会标为降级。`deepseek-v4-pro` 是否可用取决于你的 DeepSeek 账号或兼容网关，部署前应以供应商控制台为准。
 
+### 阿里百炼 Paraformer 文件转写
+
+```dotenv
+FRAMEFLOW_ASR_PROVIDER=dashscope
+FRAMEFLOW_ASR_MODEL=paraformer-v2
+DASHSCOPE_API_KEY=仅保存在服务器的新Key
+FRAMEFLOW_DASHSCOPE_BASE_URL=https://你的专属Host/api/v1
+FRAMEFLOW_ASR_PUBLIC_BASE_URL=https://你的FrameFlow域名
+FRAMEFLOW_ASR_URL_SIGNING_SECRET=至少32字节的随机字符串
+FRAMEFLOW_ASR_TIMEOUT=600
+```
+
+Paraformer 需要从公网 HTTPS 读取待转写文件。FrameFlow 只为单个源文件生成带 HMAC 签名和有效期的临时 URL，原始上传目录仍保持私有；Caddy Basic Auth 仅豁免 `/api/v1/asr/source/*`，其他页面和 API 继续受保护。修改已有部署后需再次执行 `bash deploy/configure-auth.sh enable` 以刷新鉴权片段，然后重建应用。不要将签名密钥与 DashScope Key 提交到 Git。
+
 ## 4. 常用运维
 
 ```bash
