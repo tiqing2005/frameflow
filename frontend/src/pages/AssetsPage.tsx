@@ -8,6 +8,7 @@ import {
   Plus,
   Search,
   Tags,
+  Trash2,
   UploadCloud,
   X,
 } from 'lucide-react'
@@ -141,7 +142,7 @@ export function AssetsPage() {
       )}
 
       {uploadOpen && <UploadAssetModal onClose={() => setUploadOpen(false)} onUploaded={() => { setUploadOpen(false); void load() }} />}
-      {selected && <AssetDetail asset={selected} onClose={() => setSelected(null)} onUpdated={(asset) => { setAssets((items) => items.map((item) => item.id === asset.id ? asset : item)); setSelected(asset) }} />}
+      {selected && <AssetDetail asset={selected} onClose={() => setSelected(null)} onUpdated={(asset) => { setAssets((items) => items.map((item) => item.id === asset.id ? asset : item)); setSelected(asset) }} onDeleted={(assetId) => { setAssets((items) => items.filter((item) => item.id !== assetId)); setTotal((count) => Math.max(0, count - 1)); setSelected(null) }} />}
     </main>
   )
 }
@@ -204,14 +205,16 @@ function UploadAssetModal({ onClose, onUploaded }: { onClose: () => void; onUplo
   )
 }
 
-function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () => void; onUpdated: (asset: Asset) => void }) {
+function AssetDetail({ asset, onClose, onUpdated, onDeleted }: { asset: Asset; onClose: () => void; onUpdated: (asset: Asset) => void; onDeleted: (assetId: string) => void }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(asset.name)
   const [tags, setTags] = useState(asset.tags.join('，'))
   const [keywords, setKeywords] = useState(asset.keywords.join('，'))
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const toast = useToast()
-  const dialogRef = useDialogFocus(onClose, !saving)
+  const busy = saving || deleting
+  const dialogRef = useDialogFocus(onClose, !busy)
 
   const save = async () => {
     setSaving(true)
@@ -225,10 +228,25 @@ function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () 
     } finally { setSaving(false) }
   }
 
+  const remove = async () => {
+    if (asset.is_seed) return
+    if (!window.confirm(`确定删除「${asset.name}」？删除后将从素材库和服务器文件中移除，无法恢复。`)) return
+    setDeleting(true)
+    try {
+      await api.deleteAsset(asset.id)
+      onDeleted(asset.id)
+      toast('素材已删除', 'success')
+    } catch (err) {
+      toast(errorMessage(err), 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
-    <div className="drawer-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
+    <div className="drawer-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
       <aside ref={dialogRef} className="asset-drawer" role="dialog" aria-modal="true" aria-label="素材详情" tabIndex={-1}>
-        <div className="drawer-head"><div><span className="eyebrow">素材详情</span><h2>{asset.name}</h2></div><button type="button" className="icon-button" aria-label="关闭素材详情" disabled={saving} onClick={onClose}><X size={19} /></button></div>
+        <div className="drawer-head"><div><span className="eyebrow">素材详情</span><h2>{asset.name}</h2></div><button type="button" className="icon-button" aria-label="关闭素材详情" disabled={busy} onClick={onClose}><X size={19} /></button></div>
         <div className="drawer-preview"><AssetVisual asset={asset} contain controls={asset.kind === 'video'} /></div>
         <div className="drawer-body">
           {editing ? <>
@@ -242,7 +260,7 @@ function AssetDetail({ asset, onClose, onUpdated }: { asset: Asset; onClose: () 
             <div className="detail-group"><span>画面关键词</span><p>{asset.keywords.join('、') || '暂未添加'}</p></div>
           </>}
         </div>
-        <div className="drawer-actions">{editing ? <><button type="button" className="button button-secondary" onClick={() => setEditing(false)}>取消</button><button type="button" className="button button-primary" disabled={saving} onClick={() => void save()}>{saving ? <InlineSpinner label="保存中" /> : <><Check size={16} /> 保存更改</>}</button></> : <button type="button" className="button button-secondary" onClick={() => setEditing(true)}>编辑名称与标签</button>}</div>
+        <div className="drawer-actions">{editing ? <><button type="button" className="button button-secondary" disabled={saving} onClick={() => setEditing(false)}>取消</button><button type="button" className="button button-primary" disabled={saving} onClick={() => void save()}>{saving ? <InlineSpinner label="保存中" /> : <><Check size={16} /> 保存更改</>}</button></> : <>{!asset.is_seed && <button type="button" className="button button-danger" disabled={deleting} onClick={() => void remove()}>{deleting ? <InlineSpinner label="删除中" /> : <><Trash2 size={15} /> 删除素材</>}</button>}<button type="button" className="button button-secondary" disabled={deleting} onClick={() => setEditing(true)}>编辑名称与标签</button></>}</div>
       </aside>
     </div>
   )

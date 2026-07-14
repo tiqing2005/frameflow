@@ -6,11 +6,14 @@ import {
   Clapperboard,
   FolderKanban,
   Image,
+  LogOut,
   Menu,
   Plus,
+  UserRound,
   X,
 } from 'lucide-react'
 import './App.css'
+import { AuthProvider, useAuth } from './auth'
 import { ToastProvider } from './components/ui'
 import { AppLink, navigate, useRoute, type Route } from './router'
 import { DashboardPage } from './pages/DashboardPage'
@@ -20,6 +23,7 @@ import { WorkbenchPage } from './pages/WorkbenchPage'
 import { AssetsPage } from './pages/AssetsPage'
 import { RunsPage } from './pages/RunsPage'
 import { DemoPage } from './pages/DemoPage'
+import { LoginPage } from './pages/LoginPage'
 
 const navItems = [
   { label: '项目', path: '/projects', icon: FolderKanban, routes: ['dashboard', 'new', 'processing', 'project'] },
@@ -49,6 +53,7 @@ function PageContent({ route }: { route: Route }) {
 
 function AppShell() {
   const route = useRoute()
+  const { session, logout } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
   const isWorkbench = route.name === 'project'
   return (
@@ -78,6 +83,13 @@ function AppShell() {
             <Beaker size={18} /><span>演示工具</span>
           </AppLink>
         </nav>
+        {session?.user && (
+          <div className="sidebar-account">
+            <span className="account-avatar"><UserRound size={16} /></span>
+            <span><strong>{session.user.display_name}</strong><small>{session.user.username} · 管理员</small></span>
+            <button type="button" aria-label="退出登录" title="退出登录" onClick={() => void logout()}><LogOut size={15} /></button>
+          </div>
+        )}
         <div className="sidebar-foot">
           <span className="service-dot" />
           <div><strong>FrameFlow Studio</strong><small>内容与素材工作台</small></div>
@@ -97,8 +109,22 @@ function AppShell() {
   )
 }
 
+function AuthGate() {
+  const { session, loading } = useAuth()
+  if (loading) return (
+    <main className="auth-loading" aria-busy="true">
+      <span className="brand-symbol"><Clapperboard size={19} /></span>
+      <strong>FrameFlow</strong>
+      <small>正在确认安全会话…</small>
+    </main>
+  )
+  if (session?.auth_enabled && !session.authenticated) return <LoginPage />
+  if (!session) return <LoginPage />
+  return <AppShell />
+}
+
 function App() {
-  return <ToastProvider><AppShell /></ToastProvider>
+  return <AuthProvider><ToastProvider><AuthGate /></ToastProvider></AuthProvider>
 }
 
 export default App

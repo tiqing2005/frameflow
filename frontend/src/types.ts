@@ -18,6 +18,20 @@ export interface ApiErrorBody {
   details?: unknown
 }
 
+export interface AuthUser {
+  username: string
+  display_name: string
+  role: 'admin' | string
+}
+
+export interface AuthSessionInfo {
+  auth_enabled: boolean
+  configured: boolean
+  authenticated: boolean
+  user: AuthUser | null
+  csrf_token: string | null
+}
+
 export interface Project {
   id: string
   title: string
@@ -70,6 +84,8 @@ export interface Asset {
   height?: number | null
   created_at?: string
   updated_at?: string
+  is_seed?: boolean
+  active?: boolean
 }
 
 export interface Recommendation {

@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  AuthSessionInfo,
   Asset,
   AuditEvent,
   CreatePreviewResponse,
@@ -19,6 +20,11 @@ import type {
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 const DEFAULT_REQUEST_TIMEOUT = 15_000
 const UPLOAD_REQUEST_TIMEOUT = 120_000
+let csrfToken: string | null = null
+
+export function setCsrfToken(value: string | null) {
+  csrfToken = value
+}
 
 export interface ApiCallOptions {
   signal?: AbortSignal
@@ -49,6 +55,10 @@ async function request<T>(path: string, init: RequestInit = {}, options: ApiCall
     headers.set('Content-Type', 'application/json')
   }
   headers.set('Accept', 'application/json')
+  const method = (init.method || 'GET').toUpperCase()
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    headers.set('X-CSRF-Token', csrfToken)
+  }
   const controller = new AbortController()
   const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT
   const abortFromCaller = () => controller.abort(options.signal?.reason)
@@ -57,7 +67,7 @@ async function request<T>(path: string, init: RequestInit = {}, options: ApiCall
   const timeout = window.setTimeout(() => controller.abort('timeout'), timeoutMs)
 
   try {
-    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal })
+    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal, credentials: 'include' })
     if (!response.ok) {
       let body: Partial<ApiErrorBody> = {}
       try {
@@ -65,7 +75,12 @@ async function request<T>(path: string, init: RequestInit = {}, options: ApiCall
       } catch {
         body = { message: response.statusText }
       }
-      throw new ApiError(response.status, body)
+      const apiError = new ApiError(response.status, body)
+      if (response.status === 401 && !path.startsWith('/auth/')) {
+        setCsrfToken(null)
+        window.dispatchEvent(new CustomEvent('frameflow:auth-required'))
+      }
+      throw apiError
     }
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>
@@ -92,6 +107,13 @@ const query = (params: Record<string, string | undefined>) => {
 }
 
 export const api = {
+  authSession: (options?: ApiCallOptions) => request<AuthSessionInfo>('/auth/session', {}, options),
+  login: (username: string, password: string, options?: ApiCallOptions) =>
+    request<AuthSessionInfo>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }, options),
+  logout: (options?: ApiCallOptions) => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }, options),
   dashboard: (options?: ApiCallOptions) => request<Dashboard>('/dashboard', {}, options),
   projects: (options?: ApiCallOptions) => request<Paged<Project> | Project[]>('/projects', {}, options).then((data) =>
     Array.isArray(data) ? { items: data, total: data.length } : data,
@@ -150,6 +172,8 @@ export const api = {
   },
   updateAsset: (id: string, changes: Partial<Asset>, options?: ApiCallOptions) =>
     request<Asset>(`/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }, options),
+  deleteAsset: (id: string, options?: ApiCallOptions) =>
+    request<void>(`/assets/${encodeURIComponent(id)}`, { method: 'DELETE' }, options),
   runs: (options?: ApiCallOptions) => request<Paged<Run> | Run[]>('/runs', {}, options).then((data) =>
     Array.isArray(data) ? { items: data, total: data.length } : data,
   ),
