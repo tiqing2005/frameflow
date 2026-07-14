@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 import threading
+from contextlib import contextmanager
 from datetime import timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from app.models import AIRun, Asset, utcnow
+from app.db import Database
+from app.models import Base
 from app.llm import AssetTagSuggestion
 from app.services.asset_tagging import (
     PreparedFrame,
@@ -344,3 +348,50 @@ def test_health_counts_running_asset_tagging_as_busy(runtime):
     worker_check = ready.json()["checks"]["worker"]
     assert created["id"] in worker_check["active_asset_tagging_ids"]
     assert worker_check["capacity"]["busy"] == 1
+
+
+def test_existing_postgresql_assets_receive_additive_tagging_columns(monkeypatch):
+    statements: list[str] = []
+
+    class FakeConnection:
+        def execute(self, statement) -> None:
+            statements.append(str(statement))
+
+    class FakeBegin:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, _type, _value, _traceback) -> None:
+            return None
+
+    class FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def begin(self):
+            return FakeBegin()
+
+    class FakeInspector:
+        @staticmethod
+        def get_columns(table_name: str) -> list[dict[str, str]]:
+            assert table_name == "assets"
+            return [{"name": "id"}, {"name": "name"}]
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    database = Database.__new__(Database)
+    database.settings = SimpleNamespace(database_url="postgresql://frameflow")
+    database.engine = FakeEngine()
+    database.session = fake_session
+    monkeypatch.setattr(Base.metadata, "create_all", lambda _engine: None)
+    monkeypatch.setattr("app.db.inspect", lambda _engine: FakeInspector())
+    monkeypatch.setattr("app.seed.seed_assets", lambda _session, _settings: None)
+
+    database.initialize()
+
+    sql = "\n".join(statements)
+    assert "ADD COLUMN tagging_status" in sql
+    assert "ADD COLUMN tagging_generation" in sql
+    assert "ADD COLUMN tagging_finished_at" in sql
+    assert "CREATE INDEX IF NOT EXISTS ix_assets_tagging_claim" in sql

@@ -138,3 +138,39 @@ test('上传弹窗说明留空后台识别及第三方画面传输', async ({ pa
   await expect(dialog.getByText(/一张归一化画面/)).toBeVisible()
   await expect(dialog.getByText(/敏感素材/)).toBeVisible()
 })
+
+test('跨标签页排队后详情在重新聚焦时同步并禁止旧表单编辑', async ({ page }) => {
+  let externalQueued = false
+  await page.route('**/api/v1/**', async (route) => {
+    if (await fulfillDisabledAuth(route)) return
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'GET' && path === '/api/v1/assets') {
+      await route.fulfill({ json: { items: [seedAsset], total: 1 } })
+      return
+    }
+    if (request.method() === 'GET' && path === `/api/v1/assets/${SEED_ASSET_ID}`) {
+      await route.fulfill({
+        json: externalQueued
+          ? { ...seedAsset, tagging_status: 'queued', tagging_requested_at: '2026-07-14T02:00:00Z' }
+          : seedAsset,
+      })
+      return
+    }
+    await route.fulfill({
+      status: 404,
+      json: { code: 'NOT_MOCKED', message: `${request.method()} ${path}`, retryable: false },
+    })
+  })
+
+  await page.goto('/assets')
+  await page.getByRole('button', { name: /城市夜景种子素材/ }).click()
+  const drawer = page.getByRole('dialog', { name: '素材详情' })
+  await expect(drawer.getByText('尚未运行画面识别')).toBeVisible()
+
+  externalQueued = true
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+
+  await expect(drawer.getByText('等待画面识别')).toBeVisible()
+  await expect(drawer.getByRole('button', { name: '编辑名称与标签' })).toBeDisabled()
+})

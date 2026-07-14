@@ -137,6 +137,9 @@ export function AssetsPage() {
       const result = await api.assets({ q: query.trim() || undefined, kind: kind || undefined }, { signal: controller.signal })
       if (controller.signal.aborted || currentLoad !== loadVersion.current) return
       setAssets(result.items)
+      setSelected((current) => current
+        ? result.items.find((item) => item.id === current.id) || current
+        : current)
       setTotal(result.total)
       setError('')
     } catch (err) {
@@ -176,6 +179,9 @@ export function AssetsPage() {
         if (stopped || controller.signal.aborted) return
         failureCount = 0
         setAssets(result.items)
+        setSelected((current) => current
+          ? result.items.find((item) => item.id === current.id) || current
+          : current)
         setTotal(result.total)
         if (result.items.some(isTaggingActive)) schedule(TAGGING_POLL_INTERVAL)
       } catch (err) {
@@ -344,6 +350,27 @@ function AssetDetail({ asset, onClose, onUpdated, onDeleted }: { asset: Asset; o
       if (detailReadAbort.current === controller) detailReadAbort.current = null
     }
   }, [asset.id])
+
+  useEffect(() => {
+    if (taggingActive) return
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return
+      detailReadAbort.current?.abort()
+      const controller = new AbortController()
+      detailReadAbort.current = controller
+      void api.asset(asset.id, { signal: controller.signal })
+        .then((latest) => {
+          if (!controller.signal.aborted) onUpdatedRef.current(latest)
+        })
+        .catch(() => undefined)
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [asset.id, taggingActive])
 
   useEffect(() => {
     if (!taggingActive) return
