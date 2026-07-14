@@ -350,14 +350,14 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 
 ### 2026-07-14 提交前验证记录
 
-- 后端 `python -m pytest`：PASS，`70 passed, 1 deselected`，29.87s。
+- 后端 `python -m pytest`：PASS，`76 passed, 1 deselected`，42.88s。
 - 前端 `npm run lint`：PASS。
-- 前端 `npm run build`：PASS，1785 modules transformed，输出 JS gzip 90.19 kB。
-- 前端 `npm run test:browser`：PASS，Chromium `19 passed`，包含完整闭环、拖动排序、快速替换、失败回滚、保存竞态、时间线与 390px 预览布局。
+- 前端 `npm run build`：PASS，1785 modules transformed，输出 JS gzip 90.42 kB。
+- 前端 `npm run test:browser`：PASS，Chromium `22 passed`，包含完整闭环、拖动排序、快速替换、失败回滚、保存竞态、时间线过期、重新匹配刷新和 390px 预览布局。
 - 真实 LLM live 测试：PASS，使用本地未提交 `.env` 调用 OpenAI-compatible DeepSeek 路径，断言 `degraded=false`；输出与证据文件均不含密钥。
 - 本地向量评测：混合排序(向量) Hit@3 `0.9412`、MRR `0.7966`、nDCG@3 `0.8288`。
 - ffmpeg 冒烟：图片 + 视频 2 片段、3 秒、1280×720，输出 577,972 bytes；本机编码器 `libopenh264`。本机 ffmpeg 缺少字幕能力，因此该次 `subtitles_burned=false`；Docker 镜像安装 Debian ffmpeg 与 Noto CJK 字体，仍需 Docker daemon 可用后复验。
-- `docker compose --env-file deploy/.env.example config --quiet`：PASS；Docker daemon 未运行，因此镜像构建、容器内 Caddy validate 和字幕镜像复验未执行。
+- `docker compose --env-file deploy/.env.example config --quiet`：PASS；当前开发机 Docker daemon 未运行，因此本地镜像构建、容器内 Caddy validate 和字幕镜像复验未执行，改由新增 GitHub CI delivery job 覆盖。
 - 本地只读 acceptance：PASS，live/ready/seed/projects/runs/audit 全部 HTTP 200，活动素材 39 个；使用 `-SkipCreate`，未写入新项目。
 - 公网 acceptance / 部署：NOT RUN；本轮按要求只开发、验证并推送，不部署。
 

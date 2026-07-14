@@ -205,6 +205,7 @@
 | 400 | `INVALID_INPUT`, `INVALID_FILE_TYPE` | 请求语义/文件不合法 |
 | 404 | `PROJECT_NOT_FOUND`, `JOB_NOT_FOUND`, `ASSET_NOT_FOUND` | 资源不存在 |
 | 409 | `SEGMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 版本、幂等请求或状态迁移冲突 |
+| 409 | `ASSET_IN_USE`, `MINIMUM_ASSET_GUARD` | 素材仍被片段使用，或停用后会低于 3 个启用素材 |
 | 413 | `UPLOAD_TOO_LARGE` | 超过服务端上传限制 |
 | 422 | `VALIDATION_ERROR` | Pydantic 字段校验失败，仍尽量包装为统一格式 |
 | 429 | `RATE_LIMITED` | 超过当前客户端的读/写请求速率限制 |
@@ -240,13 +241,16 @@
     },
     "worker": {
       "online": true,
+      "state": "idle",
+      "accepting_jobs": true,
+      "detail": null,
       "last_heartbeat": "2026-07-13T08:30:00Z"
     }
   }
 }
 ```
 
-未就绪返回 HTTP 503 和统一错误体。
+未就绪返回 HTTP 503 和统一错误体。当 Worker 因不可终止的超时线程进入隔离状态时，`checks.worker.state` 为 `isolated`、`accepting_jobs` 为 `false`，并在 `detail` 中给出原因。
 
 ## 5. 仪表盘与项目
 

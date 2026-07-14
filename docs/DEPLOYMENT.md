@@ -29,7 +29,7 @@ cd frameflow
 bash deploy/first-deploy.sh app.example.com ops@example.com
 ```
 
-脚本会创建 `deploy/.env`、写入域名与同源 CORS，并在终端中要求设置两次 Demo 访问密码。密码只用于生成 bcrypt 哈希，不会以明文写入配置。随后脚本启用整站 Basic Auth、校验 Compose、构建镜像、启动服务并等待就绪。首次构建通常需要数分钟。Caddy 在 DNS 与端口正确时自动申请和续期证书。
+脚本会创建 `deploy/.env`、写入域名与同源 CORS，并在终端中要求设置两次 Demo 访问密码。密码只用于生成 bcrypt 哈希和本次认证 smoke，不会以明文写入配置。随后脚本验证 Compose、应用 ready、Caddy 容器健康与配置，以及公网 HTTPS/Basic Auth；任一必需检查失败都不会报告部署成功。
 
 ```bash
 docker compose --env-file deploy/.env ps
@@ -38,6 +38,8 @@ curl -fsS -u frameflow https://app.example.com/health/ready
 ```
 
 `live` 仅表示 API 存活；`ready` 还检查 SQLite、种子素材与 Worker 心跳，是发布验收标准。
+
+发布脚本还会等待 Caddy healthcheck、执行 Caddyfile validate，并按 `PUBLIC_SMOKE_*` 配置执行真实 HTTPS/Basic Auth smoke。首次部署默认要求公网 smoke 成功；仅在隔离内网演练时才显式设置 `PUBLIC_SMOKE_REQUIRED=false`。
 
 ## 3. 环境变量
 
@@ -55,6 +57,8 @@ chmod 600 deploy/.env
 | `BASIC_AUTH_USER` | Caddy 整站鉴权用户名 | `frameflow` |
 | `BASIC_AUTH_HASH` | Caddy bcrypt 哈希；脚本生成并用单引号保存 | 首次部署时生成 |
 | `CADDY_MAX_REQUEST_BODY` | 入口层请求体硬上限，应略大于应用上传上限 | `110MB` |
+| `PUBLIC_SMOKE_ENABLED` / `PUBLIC_SMOKE_REQUIRED` | 是否执行公网 HTTPS smoke，以及失败是否阻断发布 | 均为 `true` |
+| `PUBLIC_SMOKE_URL` | 发布 smoke 的 HTTPS 基址 | `https://你的域名` |
 | `FRAMEFLOW_CORS_ORIGINS` | 允许的浏览器来源，逗号分隔 | `https://你的域名` |
 | `FRAMEFLOW_MAX_UPLOAD_MB` | 单文件上传上限 | `100` |
 | `DEMO_MODE` | 是否注册故障注入接口 | `false`，部署环境保持关闭 |
@@ -73,6 +77,9 @@ chmod 600 deploy/.env
 | `EMBEDDING_PROVIDER` | `auto`、`local`、`openai-compatible` 或 `none` | `auto` |
 | `FRAMEFLOW_MEMORY_LIMIT` | 应用容器内存上限 | `3g`，本地模型按容量上调 |
 | `IMAGE_API_*` | 图像生成服务预留配置 | 当前版本尚未接入业务链路 |
+| `BACKUP_INCLUDE_MODEL_CACHE` | 是否备份可重新下载的模型与缓存 | `false` |
+| `BACKUP_MIN_FREE_MB` | 快照卷与归档目录的额外空间余量 | `1024` |
+| `BACKUP_RETENTION_DAYS` / `BACKUP_RETENTION_COUNT` | 旧备份保留策略；`0` 关闭对应规则 | `30` / `20` |
 
 修改构建参数后运行 `bash deploy/upgrade.sh`；只修改运行时变量可执行：
 
@@ -81,6 +88,14 @@ docker compose --env-file deploy/.env up -d --force-recreate
 ```
 
 不要使用 `VITE_` 前缀保存密钥：Vite 构建变量会进入浏览器静态资源。
+
+可随时复验完整发布链路：
+
+```bash
+bash deploy/smoke.sh
+# 需要同时验证认证后公网 ready 时，仅临时传入，不要写入 .env：
+FRAMEFLOW_SMOKE_PASSWORD='本次密码' bash deploy/smoke.sh
+```
 
 ### 整站 Basic Auth（受控 Demo 默认启用）
 
@@ -105,7 +120,7 @@ bash deploy/configure-auth.sh disable
 
 ### 请求体、资源和日志上限
 
-Caddy 默认在入口层拒绝超过 `110MB` 的请求，应用仍按 `FRAMEFLOW_MAX_UPLOAD_MB=100` 校验单文件，两层限制不可调反。安全响应头包含 HSTS、CSP、禁止嵌入和 MIME 嗅探；CSP 只为 FastAPI `/docs`、`/redoc` 保留 jsDelivr 与官方 favicon 例外。Compose 同时限制 CPU、内存、PID、临时目录和 `json-file` 日志轮转；应用根文件系统只读，持久化写入仅允许 `/data`，临时写入仅允许 `/tmp`。可在 `deploy/.env` 调整 `FRAMEFLOW_*_LIMIT` 和 `CADDY_*_LIMIT`，但不建议取消上限。Compose 仅把应用需要的变量显式注入 FrameFlow，Caddy 的 Basic Auth 哈希和 ACME 配置不会进入应用容器。
+Caddy 默认在入口层拒绝超过 `110MB` 的请求，应用仍按 `FRAMEFLOW_MAX_UPLOAD_MB=100` 校验单文件；上传现在按 1 MiB 分块写入 `/data` 并边计数/哈希，避免把整个文件复制到 Python 堆内存。安全响应头包含 HSTS、CSP、禁止嵌入和 MIME 嗅探；CSP 只为 FastAPI `/docs`、`/redoc` 保留 jsDelivr 与官方 favicon 例外。Compose 同时限制 CPU、内存、PID、临时目录和 `json-file` 日志轮转；应用根文件系统只读，持久化写入仅允许 `/data`，临时写入仅允许 `/tmp`。可在 `deploy/.env` 调整 `FRAMEFLOW_*_LIMIT` 和 `CADDY_*_LIMIT`，但不建议取消上限。Compose 仅把应用需要的变量显式注入 FrameFlow，Caddy 的 Basic Auth 哈希和 ACME 配置不会进入应用容器。
 
 ### DeepSeek V4 Pro 示例
 
@@ -141,21 +156,21 @@ make config
 
 ## 5. 备份与恢复
 
-为保证 SQLite WAL、数据库和上传素材一致，备份会短暂停止 FrameFlow；Caddy 继续运行并在此期间返回上游不可用。
+为保证 SQLite WAL、数据库和上传素材一致，备份会短暂停止 FrameFlow，把业务数据复制到临时卷并执行 SQLite `integrity_check` 与 `foreign_key_check`；普通备份随后立即恢复应用，再从临时卷压缩，从而缩短停机时间。
 
 ```bash
 bash deploy/backup.sh
 ```
 
-归档默认写入 `backups/frameflow-UTC时间.tar.gz`，同时生成同名 `.sha256` 校验文件。脚本使用 `umask 077`，文件默认仅当前运维用户可读；创建后还会立即验证 tar 完整性。归档和校验文件必须一起同步到服务器之外，同机单份备份不能应对磁盘故障。备份本身未加密，若包含用户素材，应使用加密存储或在传输前加密。
+归档默认写入 `backups/frameflow-UTC时间.tar.gz`，同时生成同名 `.sha256` 校验文件。脚本会预检 Docker 数据盘和归档目录空间，默认排除 `/data/models`、`/data/cache` 与用户缓存，并按配置的天数和数量清理旧备份。归档和校验文件必须一起同步到服务器之外。
 
-恢复会清空当前数据卷，必须显式确认：
+恢复会切换当前数据卷，必须显式确认：
 
 ```bash
 bash deploy/restore.sh backups/frameflow-20260713T120000Z.tar.gz --force
 ```
 
-恢复脚本会先验证 SHA-256 和 tar 完整性，拒绝绝对路径、`..` 路径穿越、链接、设备和其他特殊文件，并在隔离临时卷完整解包。只有验证通过后才停止服务；若当前数据卷存在，脚本会自动创建一份带校验和的恢复前安全备份，再覆盖正式卷。验收恢复结果前不要删除这份安全备份。
+恢复脚本先在全新隔离卷验证 SHA-256、路径安全、文件类型和 SQLite 完整性，再通过 `DATA_VOLUME_NAME` 切换新卷，不清空原卷。新数据未通过应用、Caddy 或公网 smoke 时会自动切回原卷；成功后也会保留原卷和恢复前安全备份，业务验收完成前不要删除。
 
 ## 6. 升级与回滚
 
@@ -163,7 +178,7 @@ bash deploy/restore.sh backups/frameflow-20260713T120000Z.tar.gz --force
 bash deploy/upgrade.sh
 ```
 
-流程为：`git pull --ff-only` → 构建新镜像 → 一致性备份 → 替换容器 → 就绪检查。旧镜像保留为 `frameflow:rollback-*`；若新版本未就绪，脚本自动回滚应用镜像。若未来发生不可逆数据迁移，仍应使用升级前备份恢复 `/data`。
+流程为：`git pull --ff-only` → 构建新镜像 → 一致性备份 → 替换容器 → 应用/Caddy/公网发布验收。旧镜像保留为 `frameflow:rollback-*`；任一必需检查失败时自动回滚应用镜像并再次执行完整验收。
 
 固定源码、无需拉取时：
 
@@ -218,6 +233,17 @@ docker compose --env-file deploy/.env exec frameflow python -c \
 ```
 
 就绪检查依赖 Worker 心跳。API 存活但 Worker 异常时，容器会保持 unhealthy，日志会给出原因。
+
+### Caddy 或公网 smoke 失败
+
+```bash
+docker compose --env-file deploy/.env logs --tail=200 caddy
+docker compose --env-file deploy/.env exec caddy \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+bash deploy/smoke.sh
+```
+
+Caddy 自身健康探针使用仅容器内部可见的 `127.0.0.1:2015/healthz`。公网检查仍以真实域名 HTTPS 为准，重点核对 DNS A/AAAA、80/443、防火墙和证书签发日志。
 
 ### 数据卷权限
 
