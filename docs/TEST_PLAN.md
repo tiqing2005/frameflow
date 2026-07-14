@@ -292,11 +292,11 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 
 期望只命中 `.env.example` 的空占位配置/文档，不应命中真实密钥。
 
-## 11. ASR 可选验证
+## 11. ASR 真实验证
 
 基础 CI 不下载模型也不需要外部 Key。只有在以下条件全部满足后，才可将“真实 ASR 已验证”写入提交说明：
 
-- 明确 Provider（本地 faster-whisper 或外部 OpenAI-compatible）和模型版本。
+- 明确 Provider（本地 faster-whisper、外部 OpenAI-compatible 或 DashScope）和模型版本。
 - `demo/sample-zh.wav` 经真实 Provider 返回非空字幕，项目最终 ready。
 - AIRun/任务事件如实保存 Provider/模型名，不显示 rules 冒充 ASR。
 - 无效媒体、空音频、Provider 超时/无 Key 至少各测一条失败路径。
@@ -311,9 +311,10 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 | ID | 场景 | 目标 |
 | --- | --- | --- |
 | PERF-01 | 1,000 字中文 + 12 素材，本地规则 | 普通开发机上在 10 秒内达到终态，无内存异常增长 |
-| PERF-02 | 连续创建 5 个文本任务 | API 均快速返回 202，至少两个不同 Job 同时进入 running，无重复领取、任务丢失或结果串项 |
+| PERF-02 | 单 Worker 下连续创建 5 个文本任务 | API 均快速返回 202，任务有界排队并依次完成，无重复领取、任务丢失或结果串项 |
 | PERF-03 | 100 次轮询 GET Job | 无 SQLite locked 错误，进度单调、终态稳定 |
 | PERF-04 | 100 MB 上限附近文件 | 不一次性读入前端 JS 内存；超限被及时拒绝 |
+| PERF-05 | 公网真实音频与语义增强 | 记录各阶段耗时而非只记录总时长；当前一次 71 秒热机样本为 ASR 约 20.5 秒、Gemini 增强约 3.4 秒、完整流程约 26 秒，不作为 SLA |
 
 若环境冷启需下载 ASR 模型，该时间必须单独记录，不与本地规则 PERF-01 混在一起。
 
@@ -355,12 +356,13 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 - 前端 `npm run build`：PASS。
 - 前端 `npm run test:browser`：PASS，Chromium `28 passed`，覆盖登录/首次初始化、素材删除、完整闭环、拖动排序、快速替换、失败回滚、保存竞态、时间线过期、预览异常和移动端布局。
 - 启动器契约：PASS，3 个场景，覆盖旧服务能力探测、认证路由和启动恢复边界。
-- 真实 LLM live 测试：PASS，使用本地未提交 `.env` 调用 OpenAI-compatible DeepSeek 路径，断言 `degraded=false`；输出与证据文件均不含密钥。
+- 真实 LLM 生产验证：PASS，通过未提交的服务端配置调用 OpenAI-compatible Gemini 3.1 Flash Lite Preview，运行记录为 `degraded=false`；当前一次样本约 3.4 秒，文档和输出均不含密钥或真实网关。
+- 真实 ASR 生产验证：PASS，公网单 Worker使用 `faster-whisper small/int8`，容器分配 3.5 CPU / 4 GB；当前一次 71 秒热机样本的 ASR 阶段约 20.5 秒、完整流程约 26 秒，运行记录保存真实 Provider/模型。
 - 本地向量评测：混合排序(向量) Hit@3 `0.9412`、MRR `0.7966`、nDCG@3 `0.8288`。
 - ffmpeg 冒烟：图片 + 视频 2 片段、3 秒、1280×720，输出 577,972 bytes；本机编码器 `libopenh264`。本机 ffmpeg 缺少字幕能力，因此该次 `subtitles_burned=false`；Docker 镜像安装 Debian ffmpeg 与 Noto CJK 字体，仍需 Docker daemon 可用后复验。
 - `docker compose --env-file deploy/.env.example config --quiet`：PASS；当前开发机 Docker daemon 未运行，因此本地镜像构建、容器内 Caddy validate 和字幕镜像复验未执行，改由新增 GitHub CI delivery job 覆盖。
 - 本地只读 acceptance：PASS，live/ready/seed/projects/runs/audit 全部 HTTP 200，活动素材 39 个；使用 `-SkipCreate`，未写入新项目。
-- 公网 acceptance / 部署：NOT RUN；目标域名与服务器入口已准备，但不能在应用真实部署和 smoke 通过前记为 PASS。
+- 公网部署与关键路径：PASS，已验证 HTTPS、应用登录、ready 与真实音视频模型链路；后续每个发布 commit 仍需重新保存 acceptance/smoke 输出，不能复用本次记录。
 
 最终提交前仍需在所有代码合并后复跑敏感信息、大文件和 Git 暂存区检查；最终结果以提交汇报为准。
 

@@ -6,11 +6,12 @@
 
 ## 2. 功能边界
 
-### KI-01：默认环境未配置真实 ASR
+### KI-01：本地 ASR 受单机资源限制
 
-- **影响**：音频/视频可上传并建立异步任务，但无 Provider 时会以 `ASR_NOT_CONFIGURED` 失败，不会生成字幕。
-- **当前处理**：已实现 OpenAI-compatible ASR 与本地 `faster-whisper` Provider，Worker 会用 ffmpeg 抽取 16 kHz 单声道音频；默认交付不携带外部密钥或本地模型，因此文本粘贴仍是零配置主演示入口。配置完成后可用 live 测试验证真实转写，失败界面提供明确原因与重试。
-- **后续方向**：在部署环境固定真实 Provider/模型版本，补充费用、长音频与更多真实噪声样本的持续验证。
+- **影响**：公网使用 `faster-whisper small/int8` 在专用服务器本地推理，转写会占用主要 CPU；长音频和排队任务不适合承诺固定完成时间。首次启动还需要下载模型。
+- **当前处理**：生产配置固定单 Worker，容器分配 3.5 CPU / 4 GB，模型缓存持久化到 `/data`。一次 71 秒热机测试音频的 ASR 阶段约 20.5 秒、完整流程约 26 秒，但只作为样本记录而非 SLA。无本地依赖或可用 Provider 时仍会以 `ASR_NOT_CONFIGURED` 失败，不生成假字幕。
+- **可选方案**：保留 OpenAI-compatible ASR 与 DashScope Paraformer-v2。DashScope 路径先生成 8 kbps MP3、按 75 秒切片，再用 HMAC 临时 URL 回源；该优化降低传输量，但不能保证新加坡到国内云服务的跨境链路稳定。
+- **后续方向**：补充长音频、噪声样本、冷启动与并发队列基准；资源增长后将 ASR 拆到专用推理 Worker。
 
 ### KI-02：默认匹配可降级为字符相似，需启用 Embedding 才获得语义泛化
 
@@ -34,8 +35,8 @@
 
 ### KI-05：SQLite 和单机有界 Worker 池不适合水平扩容
 
-- **影响**：当前默认可同时执行两个任务，但吞吐量仍受 SQLite 单写者、容器资源和单持久卷限制，不应同时启动多个跨机写实例。
-- **当前处理**：WAL、`busy_timeout`、持久化队列、原子领取、独立 Worker 心跳、租约恢复与有界进程池，完成单机低并发下的可靠背压。
+- **影响**：当前公网固定单 Worker，ASR 运行时后续任务会排队；吞吐量仍受 SQLite 单写者、容器资源和单持久卷限制，不应同时启动多个跨机写实例。
+- **当前处理**：WAL、`busy_timeout`、持久化队列、原子领取、独立 Worker 心跳、租约恢复与有界进程池，完成单机低并发下的可靠背压。单 Worker 是本地 ASR 避免多模型进程争抢资源的稳定性取舍，不代表代码只能运行一个 Worker。
 - **后续方向**：PostgreSQL + 业务 outbox + Redis/RabbitMQ 队列 + 对象存储，再进行横向 Worker 扩容。
 
 ### KI-06：上传文件使用本地持久卷
@@ -65,7 +66,7 @@
 
 ### KI-10：外部 Provider 真实连通性需手动 live 测试验证
 
-- **影响**：默认 CI 用 fake provider 验证协议层（schema、超时、key redact），不验证真实 DeepSeek / Embedding 端点的连通性和模型名有效性。`llm.py` 对任何异常都降级回规则，因此"配了但实际全程 degraded"是静默的。
+- **影响**：默认 CI 用 fake provider 验证协议层（schema、超时、key redact），不验证真实 Gemini、DeepSeek 或 Embedding 端点的连通性和模型名有效性。`llm.py` 对异常会降级回规则；如果只看任务终态而不看运行记录，可能忽略 Provider 实际未成功。
 - **当前处理**：`backend/tests/test_llm_live.py`（`@pytest.mark.live`）对真实端点发请求并断言 `degraded=false`；默认被 `-m 'not live'` 跳过。部署或更换 key/模型后应运行 `FRAMEFLOW_RUN_LIVE=1 python -m pytest -m live`。
 - **后续方向**：在 staging 环境以定时任务运行 live 测试并告警；保留规则降级作为演示兜底。
 

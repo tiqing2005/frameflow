@@ -540,7 +540,7 @@ Response: HTTP 202
 }
 ```
 
-默认运行时必须如实显示 `rules` / deterministic strategy，不伪造外部模型名。
+每条运行必须如实显示实际 Provider/模型：规则匹配为 `rules` / deterministic strategy，本地 ASR、Gemini 或可替换 Provider 记录各自真实值，不用外部模型名冒充规则结果。
 
 Token 用量只使用以下三个顶层字段作为公开 API 契约：
 

@@ -1,8 +1,8 @@
 # FrameFlow 单机部署手册
 
-本文描述随仓库交付的 Linux VPS 方案：一个 FrameFlow 容器运行 FastAPI API 与有界持久化 Worker 进程池，默认并发度为 2。默认可由 Caddy 容器负责反向代理和自动 HTTPS；如果宿主机已经运行 Nginx（例如同机承载其他域名），使用 `external-nginx` 覆盖，让 FrameFlow 仅监听宿主机回环地址 `127.0.0.1:8080`，不抢占 80/443。SQLite、上传文件、种子素材和可选模型统一保存在 Docker 具名卷的 `/data`。
+本文描述随仓库交付的 Linux VPS 方案：一个 FrameFlow 容器运行 FastAPI API 与有界持久化 Worker 进程池。当前专用 4 核 / 8 GB 公网主机给应用容器分配 3.5 CPU / 4 GB，并使用单 Worker，让本地 ASR 独占主要计算资源。默认可由 Caddy 容器负责反向代理和自动 HTTPS；如果宿主机已经运行 Nginx（例如同机承载其他域名），使用 `external-nginx` 覆盖，让 FrameFlow 仅监听宿主机回环地址 `127.0.0.1:8080`，不抢占 80/443。SQLite、上传文件、种子素材和可选模型统一保存在 Docker 具名卷的 `/data`。
 
-> 适用边界：作品演示、招聘作业验收和低并发单机服务。`FRAMEFLOW_WORKER_CONCURRENCY` 可配置同一容器内的并发任务数（1–16），但它不是多租户生产集群方案，不应横向扩容多个 SQLite 写实例。
+> 适用边界：作品演示、招聘作业验收和低并发单机服务。`FRAMEFLOW_WORKER_CONCURRENCY` 可配置同一容器内的并发任务数（1–16）；CPU 本地运行 `faster-whisper` 时建议保持为 `1`，通过提高单 Worker 的 CPU 配额提速。它不是多租户生产集群方案，不应横向扩容多个 SQLite 写实例。
 
 ## 1. 前置条件
 
@@ -86,6 +86,7 @@ chmod 600 deploy/.env
 | `PUBLIC_SMOKE_URL` | 发布 smoke 的 HTTPS 基址 | `https://你的域名` |
 | `FRAMEFLOW_CORS_ORIGINS` | 允许的浏览器来源，逗号分隔 | `https://你的域名` |
 | `FRAMEFLOW_MAX_UPLOAD_MB` | 单文件上传上限 | `100` |
+| `FRAMEFLOW_WORKER_CONCURRENCY` | 项目、预览和素材画面识别共享的 Worker 进程数（1–16） | CPU 本地 ASR 建议 `1` |
 | `DEMO_MODE` | 是否注册故障注入接口 | `false`，部署环境保持关闭 |
 | `DATA_VOLUME_NAME` | 持久化 `/data` 的具名卷 | `frameflow_data` |
 | `FRAMEFLOW_AUTH_ENABLED` | 启用应用内管理员登录、会话与 CSRF 防护 | `true` |
@@ -94,19 +95,23 @@ chmod 600 deploy/.env
 | `FRAMEFLOW_AUTH_PASSWORD_HASH` | PBKDF2-SHA256 管理员密码哈希 | 首次部署脚本生成，必填 |
 | `FRAMEFLOW_AUTH_SESSION_HOURS` | 应用会话有效期 | `12` |
 | `FRAMEFLOW_AUTH_COOKIE_SECURE` | 只通过 HTTPS 发送会话 Cookie | 公网 `true` |
-| `LLM_PROVIDER` | 语义增强 provider：`rules`、`openai-compatible`、`openai` 或 `deepseek` | `rules` |
-| `LLM_BASE_URL` | OpenAI-compatible API 基址，代码会追加 `/chat/completions` | DeepSeek 示例见下文 |
+| `LLM_PROVIDER` | 语义增强 provider：`rules`、`gemini`、`openai-compatible`、`openai` 或 `deepseek` | 公网 `gemini`；零配置 `rules` |
+| `LLM_BASE_URL` | OpenAI-compatible API 基址，代码会追加 `/chat/completions` | 使用供应商服务端基址，不提交真实网关 |
 | `LLM_API_KEY` | 语义增强密钥，仅注入 FrameFlow 容器 | 空 |
-| `LLM_MODEL` | 语义增强模型 ID | DeepSeek 示例 `deepseek-v4-pro` |
+| `LLM_MODEL` | 语义增强模型 ID | 公网 `gemini-3.1-flash-lite-preview` |
 | `LLM_TIMEOUT` | 单次语义增强请求超时秒数 | `20` |
-| `INSTALL_LOCAL_ASR` | 构建时安装 `faster-whisper` | `false` |
-| `FRAMEFLOW_ASR_PROVIDER` | `auto`、`openai` 或 `local` | `auto` |
+| `VISION_PROVIDER` | 素材画面识别：`none` 或 `openai-compatible` | `none`，默认不向外发送画面 |
+| `VISION_BASE_URL` | 视觉兼容网关基址，代码会追加 `/chat/completions` | 官方地址或部署者选择的网关 |
+| `VISION_API_KEY` | 视觉网关独立密钥，仅注入 FrameFlow 容器 | 空，不继承 LLM/ASR 密钥 |
+| `VISION_MODEL` / `VISION_TIMEOUT` | 视觉模型 ID / 单次请求超时秒数 | `gpt-4o-mini` / `30` |
+| `INSTALL_LOCAL_ASR` | 构建时安装 `faster-whisper` | 公网 `true` |
+| `FRAMEFLOW_ASR_PROVIDER` | `auto`、`openai`、`local` 或 `dashscope` | 公网 `local` |
 | `OPENAI_API_KEY` | OpenAI 兼容语音转写密钥，仅服务端读取 | 空 |
 | `FRAMEFLOW_OPENAI_BASE_URL` | OpenAI 兼容接口基址 | 官方地址 |
 | `HF_HOME` | Hugging Face 与本地 ASR 模型缓存目录 | `/data/models/huggingface` |
 | `INSTALL_LOCAL_EMBEDDINGS` | 构建时安装 `sentence-transformers` 等本地向量依赖 | `false` |
 | `EMBEDDING_PROVIDER` | `auto`、`local`、`openai-compatible` 或 `none` | `auto` |
-| `FRAMEFLOW_MEMORY_LIMIT` | 应用容器内存上限 | `3g`，本地模型按容量上调 |
+| `FRAMEFLOW_CPUS` / `FRAMEFLOW_MEMORY_LIMIT` | 应用容器 CPU / 内存上限 | 当前专用机 `3.5` / `4g` |
 | `IMAGE_API_*` | 图像生成服务预留配置 | 当前版本尚未接入业务链路 |
 | `BACKUP_INCLUDE_MODEL_CACHE` | 是否备份可重新下载的模型与缓存 | `false` |
 | `BACKUP_MIN_FREE_MB` | 快照卷与归档目录的额外空间余量 | `1024` |
@@ -118,7 +123,7 @@ chmod 600 deploy/.env
 bash deploy/upgrade.sh
 ```
 
-不要使用 `VITE_` 前缀保存密钥：Vite 构建变量会进入浏览器静态资源。
+不要使用 `VITE_` 前缀保存任何密钥：Vite 构建变量会进入浏览器静态资源。`VISION_*` 只能作为 FrameFlow 容器的运行时环境变量，不得作为 Docker 构建参数。
 
 可随时复验完整发布链路：
 
@@ -161,15 +166,15 @@ bash deploy/configure-auth.sh disable
 
 Caddy 默认在入口层拒绝超过 `110MB` 的请求，应用仍按 `FRAMEFLOW_MAX_UPLOAD_MB=100` 校验单文件；上传现在按 1 MiB 分块写入 `/data` 并边计数/哈希，避免把整个文件复制到 Python 堆内存。安全响应头包含 HSTS、CSP、禁止嵌入和 MIME 嗅探；CSP 只为 FastAPI `/docs`、`/redoc` 保留 jsDelivr 与官方 favicon 例外。Compose 同时限制 CPU、内存、PID、临时目录和 `json-file` 日志轮转；应用根文件系统只读，持久化写入仅允许 `/data`，临时写入仅允许 `/tmp`。可在 `deploy/.env` 调整 `FRAMEFLOW_*_LIMIT` 和 `CADDY_*_LIMIT`，但不建议取消上限。Compose 仅把应用需要的变量显式注入 FrameFlow，Caddy 的 Basic Auth 哈希和 ACME 配置不会进入应用容器。
 
-### DeepSeek V4 Pro 示例
+### Gemini 语义增强（公网当前方案）
 
 编辑 `deploy/.env`：
 
 ```dotenv
-LLM_PROVIDER=deepseek
-LLM_BASE_URL=https://api.deepseek.com
+LLM_PROVIDER=gemini
+LLM_BASE_URL=https://llm-gateway.example.com/v1
 LLM_API_KEY=你的服务端密钥
-LLM_MODEL=deepseek-v4-pro
+LLM_MODEL=gemini-3.1-flash-lite-preview
 LLM_TIMEOUT=20
 ```
 
@@ -179,7 +184,25 @@ LLM_TIMEOUT=20
 docker compose --env-file deploy/.env up -d --build --force-recreate
 ```
 
-FrameFlow 调用 `${LLM_BASE_URL}/chat/completions`。模型输出必须通过严格 JSON Schema 校验，并完整保留原字幕；无密钥、超时、HTTP 错误、非法 JSON 或字幕缺失都会自动回退到确定性规则，任务仍可完成，运行记录会标为降级。`deepseek-v4-pro` 是否可用取决于你的 DeepSeek 账号或兼容网关，部署前应以供应商控制台为准。
+`gemini` 是运行记录中的供应商标识，传输仍调用 `${LLM_BASE_URL}/chat/completions`。模型输出必须通过严格 JSON Schema 校验，并完整保留原字幕；无密钥、超时、HTTP 错误、非法 JSON 或字幕缺失都会自动回退到确定性规则，任务仍可完成，运行记录会标为降级。当前一次生产样本的语义增强阶段约 3.4 秒，该数字不是 SLA。模型 ID、兼容程度和可用性以实际网关为准；DeepSeek 可通过 `LLM_PROVIDER=deepseek` 与对应 API 基址替换，不需要修改业务代码。
+
+### 素材画面识别（可选）
+
+视觉配置与文本 LLM、ASR、Embedding 完全独立，默认关闭。需要启用 OpenAI-compatible 视觉网关时，编辑权限为 `600` 的服务器 `deploy/.env`：
+
+```dotenv
+VISION_PROVIDER=openai-compatible
+VISION_BASE_URL=https://vision-gateway.example.com/v1
+VISION_API_KEY=
+VISION_MODEL=gpt-4o-mini
+VISION_TIMEOUT=30
+```
+
+只在服务器上填写 `VISION_API_KEY`，然后运行 `bash deploy/upgrade.sh` 让容器重新加载配置。任何曾经出现在聊天、截图、终端历史或公开日志里的旧 Key 都必须先在供应商侧撤销并轮换，不得继续部署或与 `LLM_API_KEY`、`OPENAI_API_KEY` 复用。
+
+标签或关键词留空的新素材上传后会快速返回，持久化 Worker 随后处理；详情中的“AI 重新生成标签”也进入同一队列。项目处理、预览和素材画面识别共享 `FRAMEFLOW_WORKER_CONCURRENCY`，外部网关的并发与限流也应纳入压测。视觉调用只发送一张经 ffmpeg 归一化的图片画面，视频只发送一张 poster/抽取帧，不发送整段视频。启用第三方网关意味着这张画面会离开服务器；敏感素材应保持 `VISION_PROVIDER=none` 或不要上传，并事先确认供应商的数据保留、训练和合规政策。
+
+视觉未配置、超时、HTTP 错误或结果不合格时，任务按“视觉模型 → 纯文本 LLM → 本地规则”降级，仍然完成且不会把底层网关错误暴露给用户；运行记录会如实标注 `degraded` 和最终产出来源。纯文本 LLM 与规则阶段不接收画面。
 
 ### 阿里百炼 Paraformer 文件转写
 
@@ -193,7 +216,7 @@ FRAMEFLOW_ASR_URL_SIGNING_SECRET=至少32字节的随机字符串
 FRAMEFLOW_ASR_TIMEOUT=600
 ```
 
-Paraformer 需要从公网 HTTPS 读取待转写文件。FrameFlow 只为单个源文件生成带 HMAC 签名和有效期的临时 URL，原始上传目录仍保持私有；Caddy Basic Auth 仅豁免 `/api/v1/asr/source/*`，其他页面和 API 继续受保护。修改已有部署后需再次执行 `bash deploy/configure-auth.sh enable` 以刷新鉴权片段，然后重建应用。不要将签名密钥与 DashScope Key 提交到 Git。
+Paraformer 需要从公网 HTTPS 读取待转写文件。FrameFlow 会先用 ffmpeg 生成 8 kbps MP3，并按 75 秒切片，减少跨境回源单次传输量；每个切片只通过带 HMAC 签名和有效期的临时 URL 暴露，原始上传目录仍保持私有。Caddy Basic Auth 仅豁免 `/api/v1/asr/source/*`，其他页面和 API 继续受保护。该优化不能消除境外主机到国内云服务的链路抖动，因此 Paraformer 是可选云端方案，不是当前公网主路径。修改已有部署后需再次执行 `bash deploy/configure-auth.sh enable` 以刷新鉴权片段，然后重建应用。不要将签名密钥与 DashScope Key 提交到 Git。
 
 ## 4. 常用运维
 
@@ -241,19 +264,22 @@ bash deploy/upgrade.sh
 SKIP_GIT_PULL=1 bash deploy/upgrade.sh
 ```
 
-## 7. 本地离线 ASR
+## 7. 本地 ASR（公网主路径）
 
 在 `deploy/.env` 设置：
 
 ```dotenv
 INSTALL_LOCAL_ASR=true
 FRAMEFLOW_ASR_PROVIDER=local
-FRAMEFLOW_WHISPER_MODEL=tiny
+FRAMEFLOW_WHISPER_MODEL=small
 FRAMEFLOW_WHISPER_DEVICE=cpu
 FRAMEFLOW_WHISPER_COMPUTE_TYPE=int8
+FRAMEFLOW_WORKER_CONCURRENCY=1
+FRAMEFLOW_CPUS=3.5
+FRAMEFLOW_MEMORY_LIMIT=4g
 ```
 
-然后运行升级脚本。模型首次使用时会下载到 `HF_HOME=/data/models/huggingface`，该目录随 `frameflow_data` 卷持久化。离线 ASR 显著增加镜像、下载时间、磁盘和内存占用；小 VPS 建议使用兼容的远程 ASR。
+然后运行升级脚本。模型首次使用时会下载到 `HF_HOME=/data/models/huggingface`，该目录随 `frameflow_data` 卷持久化。当前专用 4 核 / 8 GB 公网机使用 `small/int8`、单 Worker，并给容器分配 3.5 CPU / 4 GB；一次 71 秒热机测试的 ASR 阶段约 20.5 秒、Gemini 语义增强约 3.4 秒、完整流程约 26 秒。该记录受音频、CPU 调度、模型热身和磁盘缓存影响，不应外推为 SLA。首次下载完成后模型无需每次重新获取；升级时不要删除 `/data` 模型缓存。
 
 ### 本地 Embedding
 
@@ -323,4 +349,4 @@ bash deploy/smoke.sh
 - 删除、上传和演示故障注入接口由管理员会话统一保护，但没有更细的资源归属权限。公开面试 Demo 应保持默认 Caddy Basic Auth，并建议叠加云防火墙白名单、VPN/Tailscale；不要把它当作匿名公共 SaaS。
 - Caddy/Nginx 安全响应头不能替代应用鉴权与上传内容治理。
 - 多实例、高可用或大规模素材库应迁移到 PostgreSQL、对象存储、专用队列与独立 Worker；不要让多个容器并发写同一个 SQLite 文件。
-- 当前 2 CPU / 3 GiB 的默认容器资源建议保持 `FRAMEFLOW_WORKER_CONCURRENCY=2`；本地 ASR 或多个 ffmpeg 预览会争用 CPU/内存，提高并发前必须压测。
+- 当前公网容器保持 `FRAMEFLOW_WORKER_CONCURRENCY=1`；本地 ASR 和 ffmpeg 预览会争用 CPU/内存，应优先提高单 Worker 配额，提高并发前必须压测。
