@@ -141,7 +141,7 @@
 @keyframes shimmer { to { transform: translateX(100%); } }
 
 /* Dashboard */
-.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
+.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; }
 .metric-card { min-height: 114px; display: flex; align-items: center; gap: 14px; padding: 19px; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); }
 .metric-card:hover { border-color: #d7dcf7; box-shadow: 0 7px 24px rgba(42,52,80,.06); }
 .metric-icon { width: 40px; height: 40px; display: grid; flex: none; place-items: center; color: var(--blue); background: var(--blue-soft); border-radius: 11px; }
@@ -499,8 +499,9 @@
 @media (max-width: 1180px) {
   .page { width: calc(100% - 44px); }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
-  .metric-card:nth-child(2) { border-right: 0; }
-  .metric-card:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .metric-card { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .metric-card:nth-child(2n) { border-right: 0; }
+  .metric-card:last-child:nth-child(odd) { grid-column: 1 / -1; border-right: 0; border-bottom: 0; }
   .workbench-grid { grid-template-columns: 270px minmax(430px, 1fr) 350px; }
 }
 

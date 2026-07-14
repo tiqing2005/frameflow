@@ -9,6 +9,7 @@ import {
   FilePlus2,
   FolderKanban,
   Image,
+  LoaderCircle,
   MoreHorizontal,
   Plus,
   Trash2,
@@ -32,7 +33,14 @@ export function DashboardPage() {
     try {
       const dashboard = await api.dashboard()
       setData({
-        metrics: dashboard.metrics || { projects: 0, total_assets: 0, running_jobs: 0, failed_jobs: 0 },
+        metrics: {
+          projects: dashboard.metrics?.projects ?? 0,
+          ready_projects: dashboard.metrics?.ready_projects ?? 0,
+          total_assets: dashboard.metrics?.total_assets ?? 0,
+          queued_jobs: dashboard.metrics?.queued_jobs ?? 0,
+          running_jobs: dashboard.metrics?.running_jobs ?? 0,
+          failed_jobs: dashboard.metrics?.failed_jobs ?? 0,
+        },
         recent_projects: dashboard.recent_projects || [],
         recent_runs: dashboard.recent_runs || [],
       })
@@ -88,12 +96,16 @@ export function DashboardPage() {
           <div><span>素材</span><strong>{data?.metrics.total_assets ?? 0}</strong></div>
         </div>
         <div className="metric-card">
+          <div className="metric-icon green"><LoaderCircle size={20} /></div>
+          <div><span>执行中</span><strong>{data?.metrics.running_jobs ?? 0}</strong></div>
+        </div>
+        <div className="metric-card">
           <div className="metric-icon amber"><Clock3 size={20} /></div>
-          <div><span>处理中</span><strong>{data?.metrics.running_jobs ?? 0}</strong></div>
+          <div><span>排队中</span><strong>{data?.metrics.queued_jobs ?? 0}</strong></div>
         </div>
         <div className="metric-card">
           <div className="metric-icon red"><CircleAlert size={20} /></div>
-          <div><span>待处理</span><strong>{data?.metrics.failed_jobs ?? 0}</strong></div>
+          <div><span>失败</span><strong>{data?.metrics.failed_jobs ?? 0}</strong></div>
         </div>
       </section>
 

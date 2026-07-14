@@ -16,6 +16,41 @@ import { EmptyState, ErrorState, formatDate, formatDuration, PageLoader, useToas
 import { formatRunTokenUsage, totalRunTokens } from '../runTokens'
 import type { Run } from '../types'
 
+const operationLabels: Record<string, string> = {
+  speech_transcription: '音视频语音识别',
+  semantic_segmentation: '字幕语义增强',
+  asset_tagging: '素材智能标注',
+  asset_matching: '素材智能匹配',
+  segment_rematch: '片段重新匹配',
+  preview_render: '预览视频渲染',
+  preview_failure: '预览渲染失败',
+  pipeline_failure: '内容处理失败',
+}
+
+function operationLabel(operation?: string) {
+  return operation ? operationLabels[operation] || operation : '语义理解与标签生成'
+}
+
+function providerLabel(run: Run) {
+  const provider = (run.provider || '').toLowerCase()
+  const model = (run.model || '').toLowerCase()
+  if (provider.includes('dashscope')) return '阿里云百炼 DashScope'
+  if (provider.includes('deepseek') || model.includes('deepseek')) return 'DeepSeek'
+  if (provider === 'openai-compatible') return 'OpenAI-compatible API'
+  if (provider === 'rules') return '确定性规则'
+  if (provider === 'ffmpeg') return 'FFmpeg'
+  if (provider === 'worker') return '任务 Worker'
+  if (provider === 'hybrid-fallback') return '混合排序降级'
+  return run.provider || ''
+}
+
+function modelTraceLabel(run: Run) {
+  const provider = providerLabel(run)
+  if (run.degraded) return provider ? `${provider} · 规则降级` : '确定性规则降级'
+  if (provider && run.model && provider !== run.model) return `${provider} · ${run.model}`
+  return run.model || provider || 'AI model'
+}
+
 export function RunsPage() {
   const [runs, setRuns] = useState<Run[]>([])
   const [loading, setLoading] = useState(true)
@@ -69,14 +104,14 @@ export function RunsPage() {
               return <article className={`run-row${open ? ' expanded' : ''}`} key={run.id}>
                 <button type="button" className="run-summary" onClick={() => setExpanded(open ? null : run.id)}>
                   <span className={`run-status-icon ${run.degraded ? 'degraded' : isSuccess ? 'success' : 'failed'}`}>{run.degraded ? <AlertTriangle size={17} /> : isSuccess ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}</span>
-                  <span className="run-operation"><strong>{run.operation || '语义理解与标签生成'}</strong><small>{run.project_title || (run.project_id ? `项目 ${run.project_id.slice(0, 8)}` : '系统任务')}</small></span>
-                  <span className="model-chip"><Sparkles size={13} /> {run.degraded ? 'deterministic-rules' : run.model || run.provider || 'AI model'}</span>
+                  <span className="run-operation"><strong>{operationLabel(run.operation)}</strong><small>{run.project_title || (run.project_id ? `项目 ${run.project_id.slice(0, 8)}` : '系统任务')}</small></span>
+                  <span className="model-chip"><Sparkles size={13} /> {modelTraceLabel(run)}</span>
                   <span className="run-duration"><Clock3 size={14} /> {formatDuration(run.latency_ms)}</span>
                   <span className="run-time">{formatDate(run.created_at)}</span>
                   <ChevronDown size={16} className={open ? 'rotated' : ''} />
                 </button>
                 {open && <div className="run-detail">
-                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '规则降级成功' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {run.provider || '—'}</strong></div><div><span>Token</span><strong>{formatRunTokenUsage(run)}</strong></div>
+                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '规则降级成功' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {providerLabel(run) || '—'}</strong></div><div><span>Token</span><strong>{formatRunTokenUsage(run)}</strong></div>
                   {(run.error_message || run.degraded) && <p className="run-message"><AlertTriangle size={15} /> {run.error_message || '模型调用不可用，本次使用确定性规则完成，所有结果仍已正常持久化。'}</p>}
                 </div>}
               </article>

@@ -189,7 +189,9 @@ export interface CreatePreviewResponse {
 export interface Dashboard {
   metrics: {
     projects: number
+    ready_projects?: number
     total_assets: number
+    queued_jobs: number
     running_jobs: number
     failed_jobs: number
   }

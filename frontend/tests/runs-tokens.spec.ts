@@ -4,6 +4,8 @@ import { installDisabledAuth } from './mock-auth'
 interface RunFixture {
   id: string
   operation: string
+  provider?: string
+  model?: string
   status: string
   degraded?: boolean
   input_tokens?: number | null
@@ -99,4 +101,40 @@ test('API 明确返回的零 Token 保留为真实的 0', async ({ page }) => {
   await expect(tokenMetric.locator('strong')).toHaveText('0')
   await page.getByRole('button', { name: /零 Token 模型调用/ }).click()
   await expect(page.locator('.run-detail').getByText('0 输入 · 0 输出 · 0 总计')).toBeVisible()
+})
+
+test('运行记录明确展示 DashScope 转写和 DeepSeek 语义增强', async ({ page }) => {
+  await mockRuns(page, [
+    {
+      id: 'dashscope-run',
+      operation: 'speech_transcription',
+      provider: 'dashscope',
+      model: 'paraformer-v2',
+      status: 'succeeded',
+      created_at: createdAt,
+    },
+    {
+      id: 'deepseek-run',
+      operation: 'semantic_segmentation',
+      provider: 'deepseek',
+      model: 'DeepSeek-V4-Pro',
+      status: 'succeeded',
+      input_tokens: 180,
+      output_tokens: 60,
+      total_tokens: 240,
+      created_at: createdAt,
+    },
+  ])
+
+  await page.goto('/runs')
+
+  const asrRun = page.locator('.run-row').filter({ hasText: '音视频语音识别' })
+  await expect(asrRun).toContainText('阿里云百炼 DashScope · paraformer-v2')
+  await asrRun.locator('.run-summary').click()
+  await expect(asrRun.locator('.run-detail')).toContainText('paraformer-v2 / 阿里云百炼 DashScope')
+
+  const semanticRun = page.locator('.run-row').filter({ hasText: '字幕语义增强' })
+  await expect(semanticRun).toContainText('DeepSeek · DeepSeek-V4-Pro')
+  await semanticRun.locator('.run-summary').click()
+  await expect(semanticRun.locator('.run-detail')).toContainText('DeepSeek-V4-Pro / DeepSeek')
 })
