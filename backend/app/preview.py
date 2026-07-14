@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,38 @@ class PreviewRenderTimeout(PreviewRenderError):
     pass
 
 
+def _ffmpeg_executable() -> str:
+    """Resolve ffmpeg for both containers and one-click local development.
+
+    Production images install a system ffmpeg. Windows reviewers commonly do
+    not have it on PATH, so ``imageio-ffmpeg`` supplies a pinned, self-contained
+    executable as the portable fallback.
+    """
+
+    configured = os.getenv("FRAMEFLOW_FFMPEG_BINARY", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_file():
+            return str(candidate.resolve())
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+        raise PreviewRenderError("FRAMEFLOW_FFMPEG_BINARY 指向的 ffmpeg 不存在")
+
+    resolved = shutil.which("ffmpeg")
+    if resolved:
+        return resolved
+    try:
+        import imageio_ffmpeg
+
+        bundled = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        if bundled.is_file():
+            return str(bundled.resolve())
+    except (ImportError, RuntimeError, OSError):
+        pass
+    raise PreviewRenderError("服务器未安装可用的 ffmpeg，无法生成预览视频")
+
+
 def _srt_time(milliseconds: int) -> str:
     hours, remainder = divmod(milliseconds, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
@@ -27,6 +60,8 @@ def _run(command: list[str], *, cwd: Path, deadline: float) -> None:
     if remaining <= 0:
         raise PreviewRenderTimeout("预览渲染超过允许时间")
     try:
+        if command and command[0] == "ffmpeg":
+            command = [_ffmpeg_executable(), *command[1:]]
         completed = subprocess.run(
             command,
             cwd=cwd,
@@ -52,7 +87,7 @@ def _video_encoder(cwd: Path, deadline: float) -> tuple[str, list[str]]:
         raise PreviewRenderTimeout("预览渲染超过允许时间")
     try:
         completed = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
+            [_ffmpeg_executable(), "-hide_banner", "-encoders"],
             cwd=cwd,
             capture_output=True,
             text=True,

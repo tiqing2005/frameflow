@@ -18,6 +18,7 @@ from .models import (
     Selection,
     Source,
 )
+from .thumbnails import VIDEO_THUMBNAIL_PLACEHOLDER_URL
 
 
 def loads(value: str | None, default):
@@ -125,13 +126,23 @@ def event_dict(event: JobEvent) -> dict[str, Any]:
 
 
 def asset_dict(asset: Asset) -> dict[str, Any]:
+    thumbnail_url = asset.thumbnail_url
+    thumbnail_mime_type = asset.thumbnail_mime_type
+    if not thumbnail_url:
+        if asset.kind == "video":
+            thumbnail_url = VIDEO_THUMBNAIL_PLACEHOLDER_URL
+            thumbnail_mime_type = "image/svg+xml"
+        else:
+            thumbnail_url = asset.public_url
+            thumbnail_mime_type = asset.mime_type
     return {
         "id": asset.id,
         "name": asset.name,
         "kind": asset.kind,
         "url": asset.public_url,
         "file_url": asset.public_url,
-        "thumbnail_url": asset.public_url,
+        "thumbnail_url": thumbnail_url,
+        "thumbnail_mime_type": thumbnail_mime_type,
         "mime_type": asset.mime_type,
         "size_bytes": asset.size_bytes,
         "tags": loads(asset.tags_json, []),

@@ -16,6 +16,7 @@ from ..models import AIRun, Asset, Selection
 from ..nlp import extract_keywords, infer_topic
 from ..schemas import AssetPatch
 from ..serializers import asset_dict
+from ..thumbnails import ThumbnailResult, materialize_video_thumbnail
 from .common import _get_asset, add_audit, dumps, stable_hash, stream_upload_to_path
 
 ASSET_EXTENSIONS = {
@@ -110,8 +111,27 @@ def create_asset(
     if not _valid_asset_signature(head, suffix):
         path.unlink(missing_ok=True)
         raise APIError(415, "ASSET_SIGNATURE_MISMATCH", "素材内容与扩展名不匹配；用户上传 SVG 已禁用以避免脚本风险")
+    public_url = f"/media/uploads/assets/{stored_name}"
+    mime_type = mimetypes.guess_type(safe_name)[0] or content_type or "application/octet-stream"
+    if kind == "video":
+        poster_name = f"{Path(stored_name).stem}-poster.jpg"
+        poster_path = path.with_name(poster_name)
+        thumbnail = materialize_video_thumbnail(
+            path,
+            poster_path,
+            f"/media/uploads/assets/{poster_name}",
+            settings,
+        )
+    else:
+        thumbnail = ThumbnailResult(public_url, str(path), mime_type, generated=False)
+
+    owned_paths = {path}
+    if thumbnail.storage_path and Path(thumbnail.storage_path) != path:
+        owned_paths.add(Path(thumbnail.storage_path))
+
     def cleanup_after_rollback(_session: Session) -> None:
-        path.unlink(missing_ok=True)
+        for owned_path in owned_paths:
+            owned_path.unlink(missing_ok=True)
 
     event.listen(session, "after_rollback", cleanup_after_rollback, once=True)
     try:
@@ -135,9 +155,12 @@ def create_asset(
         asset = Asset(
             name=name,
             kind=kind,
-            public_url=f"/media/uploads/assets/{stored_name}",
+            public_url=public_url,
             storage_path=str(path),
-            mime_type=content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
+            thumbnail_url=thumbnail.url,
+            thumbnail_storage_path=thumbnail.storage_path,
+            thumbnail_mime_type=thumbnail.mime_type,
+            mime_type=mime_type,
             size_bytes=size_bytes,
             tags_json=dumps(tag_values),
             keywords_json=dumps(keyword_values),
@@ -180,7 +203,8 @@ def create_asset(
         )
         return asset
     except Exception:
-        path.unlink(missing_ok=True)
+        for owned_path in owned_paths:
+            owned_path.unlink(missing_ok=True)
         raise
 
 

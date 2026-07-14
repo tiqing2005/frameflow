@@ -60,6 +60,7 @@ class Settings:
     embedding_device: str = "cpu"
     demo_mode: bool = False
     preview_timeout: float = 300.0
+    thumbnail_timeout: float = 20.0
     preview_max_seconds: int = 180
     max_subtitle_chars: int = 200_000
     read_rate_limit_per_minute: int = 240
@@ -125,6 +126,7 @@ class Settings:
             embedding_device=os.getenv("FRAMEFLOW_EMBEDDING_DEVICE", "cpu").strip(),
             demo_mode=_bool("DEMO_MODE", False),
             preview_timeout=max(5.0, _float("FRAMEFLOW_PREVIEW_TIMEOUT", 300.0)),
+            thumbnail_timeout=max(1.0, _float("FRAMEFLOW_THUMBNAIL_TIMEOUT", 20.0)),
             preview_max_seconds=max(5, _int("FRAMEFLOW_PREVIEW_MAX_SECONDS", 180)),
             max_subtitle_chars=max(1_000, _int("FRAMEFLOW_MAX_SUBTITLE_CHARS", 200_000)),
             read_rate_limit_per_minute=max(

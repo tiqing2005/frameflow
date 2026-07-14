@@ -65,6 +65,16 @@ class Database:
                     connection.execute(
                         text("CREATE INDEX IF NOT EXISTS ix_jobs_kind ON jobs (kind)")
                     )
+            asset_columns = {column["name"] for column in inspect(self.engine).get_columns("assets")}
+            asset_migrations = {
+                "thumbnail_url": "TEXT",
+                "thumbnail_storage_path": "TEXT",
+                "thumbnail_mime_type": "VARCHAR(160)",
+            }
+            for name, definition in asset_migrations.items():
+                if name not in asset_columns:
+                    with self.engine.begin() as connection:
+                        connection.execute(text(f"ALTER TABLE assets ADD COLUMN {name} {definition}"))
             heartbeat_columns = {
                 column["name"] for column in inspect(self.engine).get_columns("worker_heartbeats")
             }

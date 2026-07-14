@@ -5,10 +5,12 @@ import json
 import shutil
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
 from .models import Asset, FaultControl
+from .thumbnails import ThumbnailResult, ensure_video_placeholder, materialize_video_thumbnail
 
 
 # The six-field tuple shape is intentionally stable: evaluation/evaluate.py
@@ -76,6 +78,7 @@ def _upsert_asset(
     mime_type: str,
     tags: list[str],
     keywords: list[str],
+    thumbnail: ThumbnailResult | None = None,
 ) -> str:
     asset_id = f"seed-{slug}"
     asset = session.get(Asset, asset_id)
@@ -91,6 +94,9 @@ def _upsert_asset(
     asset.kind = kind
     asset.public_url = public_url
     asset.storage_path = str(path)
+    asset.thumbnail_url = thumbnail.url if thumbnail else public_url
+    asset.thumbnail_storage_path = thumbnail.storage_path if thumbnail else str(path)
+    asset.thumbnail_mime_type = thumbnail.mime_type if thumbnail else mime_type
     asset.mime_type = mime_type
     asset.size_bytes = path.stat().st_size
     asset.is_seed = True
@@ -101,6 +107,7 @@ def seed_assets(session: Session, settings: Settings) -> None:
     seed_dir = settings.data_dir / "media" / "seed"
     seed_dir.mkdir(parents=True, exist_ok=True)
     source_dir = Path(__file__).resolve().parents[1] / "seed_media"
+    ensure_video_placeholder(settings)
     for slug, name, tags, keywords, primary, accent in SEED_ASSETS:
         source = source_dir / f"{slug}.jpg"
         target = seed_dir / f"{slug}.jpg"
@@ -127,6 +134,16 @@ def seed_assets(session: Session, settings: Settings) -> None:
         source = source_dir / f"{slug}.mp4"
         target = seed_dir / f"{slug}.mp4"
         _copy_media(source, target)
+        poster_source = source_dir / f"{slug}-poster.jpg"
+        poster_target = seed_dir / f"{slug}-poster.jpg"
+        if poster_source.is_file():
+            _copy_media(poster_source, poster_target)
+        thumbnail = materialize_video_thumbnail(
+            target,
+            poster_target,
+            f"/media/seed/{poster_target.name}",
+            settings,
+        )
         _upsert_asset(
             session,
             slug=slug,
@@ -137,7 +154,37 @@ def seed_assets(session: Session, settings: Settings) -> None:
             mime_type="video/mp4",
             tags=tags,
             keywords=keywords,
+            thumbnail=thumbnail,
         )
+
+    # Backfill pre-migration uploaded videos once at startup. Generated files
+    # and metadata are persisted, so API reads never invoke ffmpeg.
+    for asset in session.scalars(select(Asset).where(Asset.kind == "video")).all():
+        if asset.thumbnail_url:
+            continue
+        source_path = Path(asset.storage_path or "")
+        if not source_path.is_file():
+            asset.thumbnail_url = "/media/seed/video-placeholder.svg"
+            asset.thumbnail_storage_path = None
+            asset.thumbnail_mime_type = "image/svg+xml"
+            continue
+        poster_target = source_path.with_name(f"{source_path.stem}-poster.jpg")
+        try:
+            relative = poster_target.relative_to(settings.data_dir / "media")
+        except ValueError:
+            asset.thumbnail_url = "/media/seed/video-placeholder.svg"
+            asset.thumbnail_storage_path = None
+            asset.thumbnail_mime_type = "image/svg+xml"
+            continue
+        thumbnail = materialize_video_thumbnail(
+            source_path,
+            poster_target,
+            f"/media/{relative.as_posix()}",
+            settings,
+        )
+        asset.thumbnail_url = thumbnail.url
+        asset.thumbnail_storage_path = thumbnail.storage_path
+        asset.thumbnail_mime_type = thumbnail.mime_type
 
     if session.get(FaultControl, 1) is None:
         session.add(FaultControl(id=1, next_mode="none"))

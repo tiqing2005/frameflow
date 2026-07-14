@@ -136,6 +136,12 @@ class Asset(Base):
     kind: Mapped[str] = mapped_column(String(24), default="image", nullable=False, index=True)
     public_url: Mapped[str] = mapped_column(Text, nullable=False)
     storage_path: Mapped[str | None] = mapped_column(Text)
+    # Video posters are generated once at ingest and served as a real image.
+    # Keeping this separate from public_url prevents a browser poster request
+    # from accidentally receiving the source MP4 bytes.
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
+    thumbnail_storage_path: Mapped[str | None] = mapped_column(Text)
+    thumbnail_mime_type: Mapped[str | None] = mapped_column(String(160))
     mime_type: Mapped[str | None] = mapped_column(String(160))
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tags_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)

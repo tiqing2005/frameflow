@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import mimetypes
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +50,12 @@ class SPAStaticFiles(StaticFiles):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    # Windows may register .svg as image/svg. Canonical media types keep video
+    # and poster responses predictable across local and container deployments.
+    mimetypes.add_type("image/svg+xml", ".svg", strict=True)
+    mimetypes.add_type("video/mp4", ".mp4", strict=True)
+    mimetypes.add_type("video/webm", ".webm", strict=True)
+    mimetypes.add_type("video/quicktime", ".mov", strict=True)
     settings = settings or Settings.from_env()
     database = Database(settings)
     database.initialize()
