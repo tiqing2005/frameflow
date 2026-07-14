@@ -89,6 +89,26 @@ def main() -> None:
             )
             monitor.start()
 
+        # Image generation is an independently billed, potentially slow HTTP
+        # operation. Keep exactly one lightweight durable image worker outside
+        # the ASR/preview worker pool so it cannot block the core subtitle path.
+        image_worker_env = os.environ.copy()
+        image_worker_env["FRAMEFLOW_IMAGE_WORKER_ID"] = (
+            f"{socket.gethostname()}:image:1"
+        )
+        image_worker_env["FRAMEFLOW_DATABASE_INITIALIZED"] = "1"
+        image_worker = subprocess.Popen(
+            [sys.executable, "-m", "app.image_worker"], env=image_worker_env
+        )
+        workers.append(image_worker)
+        image_monitor = threading.Thread(
+            target=monitor_worker,
+            args=(image_worker, stopping),
+            name="frameflow-image-worker-monitor",
+            daemon=True,
+        )
+        image_monitor.start()
+
         uvicorn.run(
             "app.main:app",
             host=os.getenv("HOST", "0.0.0.0"),
@@ -98,7 +118,13 @@ def main() -> None:
         )
     finally:
         stop_workers()
-        wait_for_workers(workers)
+        # A billed image request may legitimately occupy the full provider
+        # timeout. Give it one timeout window plus a small persistence margin
+        # before resorting to a hard kill.
+        wait_for_workers(
+            workers,
+            timeout=max(10.0, settings.image_timeout + 30.0),
+        )
 
 
 if __name__ == "__main__":

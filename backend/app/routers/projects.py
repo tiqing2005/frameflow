@@ -80,6 +80,6 @@ def get_project(project_id: str, session: SessionDep):
 
 
 @router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_project(project_id: str, session: SessionDep):
-    delete_project(session, project_id)
+def remove_project(project_id: str, session: SessionDep, settings: SettingsDep):
+    delete_project(session, settings, project_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -118,5 +118,55 @@ class AssetPatch(BaseModel):
         return self
 
 
+class ImageGenerationCreate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2_000)
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    aspect_ratio: Literal["16:9", "1:1", "9:16"] = "16:9"
+    segment_id: str | None = Field(default=None, min_length=1, max_length=36)
+    auto_import: bool = False
+    auto_select: bool = False
+
+    @field_validator("prompt", "name", "segment_id", mode="before")
+    @classmethod
+    def strip_generation_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_generation_options(self):
+        if self.auto_select and (not self.auto_import or not self.segment_id):
+            raise ValueError("auto_select requires auto_import and segment_id")
+        return self
+
+
+class SegmentImageGenerationCreate(BaseModel):
+    prompt: str | None = Field(default=None, min_length=1, max_length=2_000)
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    aspect_ratio: Literal["16:9", "1:1", "9:16"] = "16:9"
+    auto_import: bool = False
+    auto_select: bool = False
+
+    @field_validator("prompt", "name", mode="before")
+    @classmethod
+    def strip_segment_generation_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_segment_generation_options(self):
+        if self.auto_select and not self.auto_import:
+            raise ValueError("auto_select requires auto_import")
+        return self
+
+
+class ImageGenerationAccept(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    select_for_segment: bool = False
+    expected_segment_version: int | None = Field(default=None, ge=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_accept_name(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
 class FaultNext(BaseModel):
     mode: Literal["ai_degrade", "job_fail", "none"]

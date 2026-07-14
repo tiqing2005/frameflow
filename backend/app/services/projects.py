@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import logging
 import mimetypes
+import shutil
 import uuid
 from pathlib import Path
 from typing import BinaryIO
@@ -17,6 +19,7 @@ from ..models import (
     Asset,
     AuditEvent,
     IdempotencyRecord,
+    ImageGeneration,
     Job,
     JobEvent,
     PreviewRender,
@@ -27,6 +30,8 @@ from ..models import (
 from ..serializers import job_dict, project_dict, source_dict
 from .common import _get_project, add_audit, dumps, stable_hash, stream_upload_to_path
 from .segments import _segment_detail
+
+logger = logging.getLogger(__name__)
 
 SOURCE_EXTENSIONS = {
     ".txt": "text",
@@ -48,14 +53,65 @@ MAX_SUBTITLE_CUES = 5_000
 
 def _delete_after_rollback(session: Session, path: Path) -> None:
     def cleanup(_session: Session) -> None:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Deferred rollback cleanup failed path=%s error_type=%s",
+                path,
+                type(exc).__name__,
+            )
 
     event.listen(session, "after_rollback", cleanup, once=True)
 
 
 def _delete_after_commit(session: Session, path: Path) -> None:
     def cleanup(_session: Session) -> None:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            # The database transaction is already committed. Cleanup is
+            # recoverable maintenance and must never turn a successful API
+            # mutation into a misleading HTTP 500.
+            logger.warning(
+                "Deferred commit cleanup failed path=%s error_type=%s",
+                path,
+                type(exc).__name__,
+            )
+
+    event.listen(session, "after_commit", cleanup, once=True)
+
+
+def _delete_tree_after_commit(session: Session, root: Path, target: Path) -> None:
+    """Remove one server-owned staging directory only after DB commit."""
+
+    allowed_root = root.resolve()
+    lexical_target = target.absolute()
+    try:
+        if lexical_target.parent.resolve() != allowed_root:
+            return
+    except OSError:
+        return
+
+    def cleanup(_session: Session) -> None:
+        try:
+            if lexical_target.is_symlink():
+                lexical_target.unlink(missing_ok=True)
+                return
+            resolved_target = lexical_target.resolve(strict=False)
+            if resolved_target == allowed_root or not resolved_target.is_relative_to(
+                allowed_root
+            ):
+                return
+            shutil.rmtree(resolved_target, ignore_errors=False)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning(
+                "Deferred directory cleanup failed path=%s error_type=%s",
+                lexical_target,
+                type(exc).__name__,
+            )
 
     event.listen(session, "after_commit", cleanup, once=True)
 
@@ -337,8 +393,35 @@ def project_detail(session: Session, project_id: str) -> dict:
     }
 
 
-def delete_project(session: Session, project_id: str) -> None:
-    project = _get_project(session, project_id)
+def delete_project(session: Session, settings: Settings, project_id: str) -> None:
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite" and not session.in_transaction():
+        # Serialize against image/core worker claims so a queued paid task
+        # cannot cross its provider boundary while project deletion is fencing it.
+        session.execute(sql_text("BEGIN IMMEDIATE"))
+    if dialect == "postgresql":
+        # Match create/retry/accept/discard and prevent a new generation from
+        # appearing after the deletion inventory is locked.
+        session.execute(
+            sql_text("SELECT pg_advisory_xact_lock(1179795789, 1162431815)")
+        )
+
+    image_generation_query = select(ImageGeneration).where(
+        ImageGeneration.project_id == project_id
+    )
+    if dialect == "postgresql":
+        # Worker success locks ImageGeneration before it writes project-bound
+        # AIRun/Audit rows. Use the same order here to avoid Project→Generation
+        # versus Generation→Project deadlocks during concurrent deletion.
+        image_generation_query = image_generation_query.with_for_update()
+    image_generations = session.scalars(image_generation_query).all()
+
+    project_query = select(Project).where(Project.id == project_id)
+    if dialect == "postgresql":
+        project_query = project_query.with_for_update()
+    project = session.scalar(project_query)
+    if project is None:
+        raise APIError(404, "PROJECT_NOT_FOUND", "项目不存在")
     source = session.scalar(select(Source).where(Source.project_id == project.id))
     storage_path = source.storage_path if source else None
     preview_paths = [
@@ -351,6 +434,25 @@ def delete_project(session: Session, project_id: str) -> None:
         ).all()
         if value
     ]
+    image_draft_root = (
+        settings.data_dir / "private" / "image-generations"
+    ).resolve()
+    staging_root = image_draft_root / "staging"
+    for generation in image_generations:
+        # Deleting the durable row fences queued and in-flight workers. A late
+        # provider response cannot publish because its guarded update no longer
+        # finds the generation. Accepted global Assets intentionally survive.
+        generation.execution_generation += 1
+        if generation.output_storage_path:
+            draft_path = Path(generation.output_storage_path).resolve(strict=False)
+            if draft_path.is_relative_to(image_draft_root):
+                _delete_after_commit(session, draft_path)
+        _delete_tree_after_commit(
+            session,
+            staging_root,
+            staging_root / generation.id,
+        )
+        session.delete(generation)
     session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.resource_id == project.id))
     session.delete(project)
     session.flush()

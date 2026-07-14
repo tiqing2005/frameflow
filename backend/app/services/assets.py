@@ -188,7 +188,14 @@ def patch_asset(
         # Serialize against manual selection writes so an asset cannot become
         # inactive between selection validation and persistence.
         session.execute(text("BEGIN IMMEDIATE"))
-    asset = _get_asset(session, asset_id)
+    if session.get_bind().dialect.name == "postgresql":
+        asset = session.scalar(
+            select(Asset).where(Asset.id == asset_id).with_for_update()
+        )
+        if asset is None:
+            raise APIError(404, "ASSET_NOT_FOUND", "素材不存在或已停用")
+    else:
+        asset = _get_asset(session, asset_id)
     before = asset_dict(asset)
     task_active = asset.tagging_status in {"queued", "running"}
     active_mode = asset.tagging_mode
@@ -276,10 +283,18 @@ def delete_asset(
     commits, so a failed delete never leaves the database pointing at missing
     media.
     """
-    if session.get_bind().dialect.name == "sqlite":
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
         # Serialize with selection writes and active-asset updates.
         session.execute(text("BEGIN IMMEDIATE"))
-    asset = _get_asset(session, asset_id)
+    if dialect == "postgresql":
+        asset = session.scalar(
+            select(Asset).where(Asset.id == asset_id).with_for_update()
+        )
+        if asset is None:
+            raise APIError(404, "ASSET_NOT_FOUND", "素材不存在或已停用")
+    else:
+        asset = _get_asset(session, asset_id)
     if asset.is_seed:
         raise APIError(409, "SEED_ASSET_PROTECTED", "内置演示素材不可删除，请使用用户上传的素材")
 

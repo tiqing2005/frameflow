@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .asr import REARMABLE_ASR_ERROR_CODES
+from .image_generation import IMAGE_GENERATION_HARD_MAX_ATTEMPTS
 from .models import (
     AIRun,
     Asset,
     AuditEvent,
     Job,
     JobEvent,
+    ImageGeneration,
     Project,
     PreviewRender,
     Recommendation,
@@ -156,6 +158,55 @@ def asset_dict(asset: Asset) -> dict[str, Any]:
         "active": asset.active,
         "created_at": iso(asset.created_at),
         "updated_at": iso(asset.updated_at),
+    }
+
+
+def image_generation_dict(generation: ImageGeneration) -> dict[str, Any]:
+    # The upstream image API does not expose measurable intermediate progress.
+    # Returning a made-up percentage would mislead users, so the UI relies on
+    # durable stages plus elapsed time and only reports 100 after completion.
+    progress = 100 if generation.status == "succeeded" else None
+    content_available = (
+        generation.status == "succeeded"
+        and generation.discarded_at is None
+        and bool(generation.output_storage_path or generation.asset_id)
+    )
+    return {
+        "id": generation.id,
+        "project_id": generation.project_id,
+        "segment_id": generation.segment_id,
+        "segment_version": generation.segment_version,
+        "source": generation.source,
+        "prompt": generation.prompt,
+        "name": generation.name,
+        "aspect_ratio": generation.aspect_ratio,
+        "provider": generation.provider,
+        "model": generation.model,
+        "status": generation.status,
+        "progress": progress,
+        "attempt": generation.attempt,
+        "max_attempts": generation.max_attempts,
+        "retryable": (
+            generation.retryable
+            and generation.attempt < IMAGE_GENERATION_HARD_MAX_ATTEMPTS
+        ),
+        "error_code": generation.error_code,
+        "error_message": generation.error_message,
+        "content_url": (
+            f"/api/v1/image-generations/{generation.id}/content"
+            if content_available
+            else None
+        ),
+        "asset_id": generation.asset_id,
+        "auto_import": generation.auto_import,
+        "auto_select": generation.auto_select,
+        "created_at": iso(generation.created_at),
+        "started_at": iso(generation.started_at),
+        "finished_at": iso(generation.finished_at),
+        "accepted_at": iso(generation.accepted_at),
+        "discarded_at": iso(generation.discarded_at),
+        "expires_at": iso(generation.expires_at),
+        "updated_at": iso(generation.updated_at),
     }
 
 

@@ -64,6 +64,16 @@ class Settings:
     vision_api_key: str | None = None
     vision_model: str = "gpt-4o-mini"
     vision_timeout: float = 30.0
+    image_api_base_url: str = ""
+    image_api_key: str | None = None
+    image_model: str = "gpt-image-2"
+    image_timeout: float = 180.0
+    image_max_response_bytes: int = 25 * 1024 * 1024
+    image_max_output_bytes: int = 15 * 1024 * 1024
+    image_max_pixels: int = 24_000_000
+    image_draft_retention_hours: int = 72
+    image_daily_limit: int = 50
+    image_max_pending: int = 5
     embedding_provider: str = "auto"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_base_url: str = "https://api.openai.com/v1"
@@ -169,6 +179,24 @@ class Settings:
             vision_api_key=os.getenv("VISION_API_KEY", "").strip() or None,
             vision_model=os.getenv("VISION_MODEL", "gpt-4o-mini").strip(),
             vision_timeout=max(0.1, _float("VISION_TIMEOUT", 30.0)),
+            image_api_base_url=os.getenv("IMAGE_API_BASE_URL", "").strip().rstrip("/"),
+            image_api_key=os.getenv("IMAGE_API_KEY", "").strip() or None,
+            image_model=os.getenv("IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2",
+            image_timeout=max(5.0, _float("IMAGE_API_TIMEOUT", 180.0)),
+            image_max_response_bytes=max(
+                1, _int("IMAGE_MAX_RESPONSE_MB", 25)
+            )
+            * 1024
+            * 1024,
+            image_max_output_bytes=max(1, _int("IMAGE_MAX_OUTPUT_MB", 15))
+            * 1024
+            * 1024,
+            image_max_pixels=max(1_000_000, _int("IMAGE_MAX_PIXELS", 24_000_000)),
+            image_draft_retention_hours=max(
+                1, _int("IMAGE_DRAFT_RETENTION_HOURS", 72)
+            ),
+            image_daily_limit=max(0, _int("IMAGE_DAILY_LIMIT", 50)),
+            image_max_pending=max(1, _int("IMAGE_MAX_PENDING", 5)),
             embedding_provider=os.getenv("EMBEDDING_PROVIDER", "auto").strip().lower(),
             embedding_model=os.getenv("FRAMEFLOW_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip(),
             embedding_base_url=os.getenv(
@@ -211,6 +239,7 @@ class Settings:
         (self.data_dir / "media" / "uploads" / "assets").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "media" / "previews").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "private" / "sources").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "private" / "image-generations").mkdir(parents=True, exist_ok=True)
         (self.whisper_download_root or self.data_dir / "models" / "whisper").mkdir(
             parents=True, exist_ok=True
         )

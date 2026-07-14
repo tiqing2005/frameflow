@@ -183,6 +183,72 @@ class Asset(Base):
     )
 
 
+class ImageGeneration(Base):
+    """A durable, reviewable text-to-image draft.
+
+    Generation state and asset-library state are deliberately orthogonal:
+    ``status`` describes the provider execution, while ``asset_id`` records an
+    optional idempotent acceptance into the shared material library.
+    """
+
+    __tablename__ = "image_generations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), index=True
+    )
+    segment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("segments.id", ondelete="SET NULL"), index=True
+    )
+    segment_version: Mapped[int | None] = mapped_column(Integer)
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), default="library", nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    effective_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    aspect_ratio: Mapped[str] = mapped_column(String(16), default="16:9", nullable=False)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="queued", nullable=False, index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    execution_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(120))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    output_storage_path: Mapped[str | None] = mapped_column(Text)
+    output_mime_type: Mapped[str | None] = mapped_column(String(160))
+    output_size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_sha256: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_import: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_select: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_image_generations_claim",
+            "status",
+            "next_run_at",
+            "lease_expires_at",
+        ),
+    )
+
+
 class AIRun(Base):
     __tablename__ = "ai_runs"
 

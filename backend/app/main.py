@@ -19,6 +19,7 @@ from .routers.audit import router as audit_router
 from .routers.demo import router as demo_router
 from .routers.health import root_router as health_root_router
 from .routers.health import router as health_router
+from .routers.image_generations import router as image_generations_router
 from .routers.jobs import router as jobs_router
 from .routers.projects import dashboard_router
 from .routers.projects import router as projects_router
@@ -102,6 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         previews_router,
         jobs_router,
         segments_router,
+        image_generations_router,
         assets_router,
         runs_router,
         audit_router,
