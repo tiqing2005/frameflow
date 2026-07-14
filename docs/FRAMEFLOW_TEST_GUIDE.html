@@ -1405,11 +1405,15 @@ docker compose --env-file deploy\.env ps</pre>
 
         <div class="test-groups">
           <details class="test-group" open>
-            <summary><div><h3>环境、项目台与创建</h3><p>从服务就绪到项目创建与幂等防重</p></div><span class="group-count">9 项</span></summary>
+            <summary><div><h3>登录、环境、项目台与创建</h3><p>从管理员会话、服务就绪到项目创建与幂等防重</p></div><span class="group-count">13 项</span></summary>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>编号</th><th>功能 / 怎么做</th><th>这么做的用意</th><th>通过标准</th><th>证据</th></tr></thead>
                 <tbody>
+                  <tr class="test-case" data-type="auto"><td>AUTH-01</td><td>未登录访问工作台</td><td>证明前端与 API 默认失败关闭</td><td>进入登录页，受保护 API 返回 401，不把旧服务误判为免登录</td><td>Playwright + API</td></tr>
+                  <tr class="test-case" data-type="isolated"><td>AUTH-02</td><td>全新本地 data 从回环地址首次初始化</td><td>验证管理员安全认领</td><td>只能创建一次；非回环请求被拒绝；数据库只存密码哈希</td><td>认证测试</td></tr>
+                  <tr class="test-case" data-type="manual"><td>AUTH-03</td><td>登录、刷新、退出并再次访问</td><td>验证会话恢复与退出</td><td>HttpOnly 会话可恢复；退出后回到登录页</td><td>无痕窗口录屏</td></tr>
+                  <tr class="test-case" data-type="auto"><td>AUTH-04</td><td>不带或伪造 CSRF 执行写请求</td><td>阻止跨站写操作</td><td>返回 403；正确 Token 的写请求成功</td><td>认证 API 测试</td></tr>
                   <tr class="test-case" data-type="auto"><td>PRE-01</td><td>访问 health/live 与 health/ready</td><td>证明 API、数据库、Worker 和素材种子真实在线</td><td>live/ready 均成功；ready 不掩盖 Worker 离线</td><td>保存响应 JSON</td></tr>
                   <tr class="test-case" data-type="manual"><td>DASH-01</td><td>对比项目台指标与项目列表</td><td>证明指标来自服务端聚合</td><td>项目、素材、处理中、失败数与数据一致</td><td>首页截图</td></tr>
                   <tr class="test-case" data-type="isolated"><td>DASH-02</td><td>使用全新临时 data 目录启动</td><td>检查首次使用与真实空状态</td><td>有解释、创建入口，无假项目</td><td>空状态截图</td></tr>
@@ -1469,7 +1473,7 @@ docker compose --env-file deploy\.env ps</pre>
           </details>
 
           <details class="test-group">
-            <summary><div><h3>素材库</h3><p>搜索、上传、预览、元数据和安全边界</p></div><span class="group-count">6 项</span></summary>
+            <summary><div><h3>素材库</h3><p>搜索、上传、预览、自动元数据、安全删除和边界</p></div><span class="group-count">9 项</span></summary>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>编号</th><th>功能 / 怎么做</th><th>这么做的用意</th><th>通过标准</th><th>证据</th></tr></thead>
@@ -1480,6 +1484,9 @@ docker compose --env-file deploy\.env ps</pre>
                   <tr class="test-case" data-type="manual"><td>ASSET-04</td><td>编辑名称、标签、关键词</td><td>证明素材可运营维护</td><td>保存后搜索新词可命中</td><td>编辑前后截图</td></tr>
                   <tr class="test-case" data-type="isolated"><td>ASSET-05</td><td>上传 SVG、伪装扩展名、不支持类型</td><td>验证文件签名与允许列表</td><td>明确拒绝，不留孤儿记录或部分文件</td><td>4xx 错误</td></tr>
                   <tr class="test-case" data-type="isolated"><td>ASSET-06</td><td>上传接近/超过 100MB 的文件</td><td>验证容量限制</td><td>超限及时拒绝，不造成异常内存增长</td><td>错误与资源监控</td></tr>
+                  <tr class="test-case" data-type="manual"><td>ASSET-07</td><td>标签/关键词留空上传素材</td><td>验证自动元数据建议及来源追溯</td><td>LLM 可用时记录真实 Provider；不可用时规则回退，不宣称视觉识别</td><td>素材详情 + AIRun</td></tr>
+                  <tr class="test-case" data-type="manual"><td>ASSET-08</td><td>删除未被引用的用户上传素材</td><td>验证 UI、DB、媒体文件与审计一致</td><td>返回 204，列表数量减少，刷新后不恢复</td><td>删除前后截图 + 审计</td></tr>
+                  <tr class="test-case" data-type="isolated"><td>ASSET-09</td><td>删除种子、已引用或会破坏保底数量的素材</td><td>防止破坏 Demo 和历史项目</td><td>明确 409/422 错误，素材与文件保留</td><td>错误提示 + API</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1519,12 +1526,12 @@ docker compose --env-file deploy\.env ps</pre>
 
         <div class="automation-grid">
           <article class="automation-card">
-            <h3><span>后端 pytest</span><span class="pill auto">42 cases</span></h3>
-            <p>覆盖 NLP、排序公式、API 主流程、幂等、持久化、故障、ASR/LLM 错误、Worker 租约与超时栅栏。</p>
+            <h3><span>后端 pytest</span><span class="pill auto">89 passed</span></h3>
+            <p>覆盖 NLP、排序公式、API 主流程、认证/CSRF、素材删除、幂等、持久化、故障、ASR/LLM 错误、Worker 租约与超时栅栏。</p>
             <pre class="command"><button class="copy" type="button" data-copy>复制</button>cd backend
 python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest</pre>
-            <b class="result-pass">本次实际结果：42 passed in 8.13s</b>
+            <b class="result-pass">2026-07-14 最终本地结果：89 passed, 1 deselected</b>
           </article>
 
           <article class="automation-card">
@@ -1538,11 +1545,11 @@ npm run build</pre>
           </article>
 
           <article class="automation-card">
-            <h3><span>Playwright 浏览器用例</span><span class="pill auto">9 cases</span></h3>
-            <p>重点覆盖 Token 展示、自动保存竞态、导航保护、失败保草稿和 409 冲突。注意：这些用例使用 mock API，不等于真实后端 E2E。</p>
+            <h3><span>Playwright 浏览器用例</span><span class="pill auto">28 passed</span></h3>
+            <p>重点覆盖登录/首次初始化、素材删除、完整闭环、Token 展示、自动保存竞态、导航保护、时间线/预览异常和 409 冲突。多数用例使用 mock API，不等于公网真实后端 E2E。</p>
             <pre class="command"><button class="copy" type="button" data-copy>复制</button>cd frontend
 npm run test:browser</pre>
-            <b class="result-pass">本次实际结果：9 passed</b>
+            <b class="result-pass">2026-07-14 最终本地结果：Chromium 28 passed</b>
           </article>
 
           <article class="automation-card">
@@ -1553,10 +1560,10 @@ npm run test:browser</pre>
           </article>
 
           <article class="automation-card">
-            <h3><span>离线检索评测</span><span class="pill auto">24 条固定集</span></h3>
+            <h3><span>离线检索评测</span><span class="pill auto">34 条固定集</span></h3>
             <p>比较关键词基线、字符 TF-IDF 与混合排序的 Hit@3、MRR、nDCG@3。它是可复现工程证据，不代表线上泛化。</p>
             <pre class="command"><button class="copy" type="button" data-copy>复制</button>python evaluation\evaluate.py</pre>
-            <p>当前文档结果：混合排序 Hit@3=1.000、MRR=1.000、nDCG@3=1.000。</p>
+            <p>启用本地向量 Provider 的当前结果：Hit@3=0.9412、MRR=0.7966、nDCG@3=0.8288；该小规模结果不代表线上泛化。</p>
           </article>
 
           <article class="automation-card">
@@ -1842,21 +1849,21 @@ npm run test:browser</pre>
         <div class="section-head">
           <div>
             <span class="section-kicker">13 · Honest Boundaries</span>
-            <h2>这些功能不能展示成“已经完成”</h2>
+            <h2>这些能力已经有实现，但不能越过真实边界</h2>
             <p>清晰披露边界反而会增强可信度。运行时 Provider 和能力状态应以实际配置、任务事件与运行记录为准。</p>
           </div>
         </div>
 
         <div class="boundary-grid">
           <div class="boundary"><i>!</i><div><b>音视频上传 ≠ 默认 ASR 已成功</b><span>上传与异步任务已实现；转写需要 faster-whisper 或真实外部 ASR。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>TF-IDF ≠ 神经 Embedding</b><span>当前是字符 n-gram 稀疏向量 + 关键词 + 标签主题混排。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>素材标签不是视觉模型自动生成</b><span>上传素材的名称、标签、关键词当前由用户填写与维护。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>16:9 预览不是精确视频时间轴</b><span>没有帧级剪辑、字幕轴、转场、音轨或预览视频导出。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>默认 TF-IDF ≠ 神经 Embedding</b><span>默认使用字符 n-gram；只有运行记录显示本地 BGE 或远程 embeddings 时，才能宣称启用了神经向量。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>自动标签不是视觉模型识图</b><span>上传素材留空时可由 LLM 或规则分析名称/文本元数据并记录来源；当前不识别真实画面内容。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>组合预览不是精确视频剪辑时间轴</b><span>已支持片段时间线和 MP4 预览，但没有帧级裁切、复杂转场、多音轨或专业导出参数。</span></div></div>
           <div class="boundary"><i>!</i><div><b>单 Worker 不代表高并发</b><span>SQLite WAL + 单 Worker 适合单机 Demo 和低并发可靠排队。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>没有完整登录与多租户</b><span>公网需用整站认证/网关限制访问，并控制上传和故障接口。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>单管理员登录 ≠ 多租户权限</b><span>已有应用会话、CSRF 与整站 Basic Auth，但没有团队用户、项目归属、RBAC 或租户隔离。</span></div></div>
           <div class="boundary"><i>!</i><div><b>IMAGE_API_* 是预留配置</b><span>当前产品没有业务内图像生成，LLM 也只增强分段、主题和关键词。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>没有素材删除、项目重命名或审计页面</b><span>部分后端能力存在，但用户界面没有这些完整操作入口。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>公网 Demo 不是生产安全系统</b><span>没有完整限流、配额、恶意文件扫描、RBAC 与多租户隔离。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>素材删除有保护边界</b><span>只能删除未被项目引用的用户上传素材；种子、已引用和最低保底素材会拒绝删除。项目重命名与审计管理页面仍未完成。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>公网 Demo 不是生产安全系统</b><span>已有单机读写限流，但没有分布式配额、恶意文件扫描、RBAC 与多租户隔离。</span></div></div>
           <div class="boundary"><i>!</i><div><b>文档与运行实例必须重新核对</b><span>发布前校对 KNOWN_ISSUES、AI_USAGE、配置变量和实际代码，避免陈旧描述。</span></div></div>
         </div>
       </section>
