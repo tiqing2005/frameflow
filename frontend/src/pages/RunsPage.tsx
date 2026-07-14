@@ -4,6 +4,7 @@ import {
   Bot,
   CheckCircle2,
   ChevronDown,
+  CircleX,
   Clock3,
   Cpu,
   Gauge,
@@ -24,6 +25,7 @@ const operationLabels: Record<string, string> = {
   segment_rematch: '片段重新匹配',
   preview_render: '预览视频渲染',
   preview_failure: '预览渲染失败',
+  image_generation: '文生图素材生成',
   pipeline_failure: '内容处理失败',
 }
 
@@ -37,6 +39,7 @@ function providerLabel(run: Run) {
   if (provider.includes('dashscope')) return '阿里云百炼 DashScope'
   if (provider.includes('gemini') || model.includes('gemini')) return 'Google Gemini'
   if (provider.includes('deepseek') || model.includes('deepseek')) return 'DeepSeek'
+  if (provider.includes('image') || provider.includes('lanxiu')) return '图像生成 API'
   if (provider === 'openai-compatible') return 'OpenAI-compatible API'
   if (provider === 'rules') return '确定性规则'
   if (provider === 'ffmpeg') return 'FFmpeg'
@@ -57,6 +60,7 @@ export function RunsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [statusFilter, setStatusFilter] = useState<'all' | 'failed'>('all')
   const toast = useToast()
 
   const load = useCallback(async (quiet = false) => {
@@ -75,11 +79,16 @@ export function RunsPage() {
     const latencies = runs.map((run) => run.latency_ms).filter((value): value is number => value != null)
     return {
       successful,
+      failed: runs.filter((run) => run.status?.toLowerCase() === 'failed').length,
       degraded: runs.filter((run) => run.degraded).length,
       average: latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : 0,
       tokens: totalRunTokens(runs),
     }
   }, [runs])
+  const failureFilterActive = statusFilter === 'failed' && summary.failed > 0
+  const visibleRuns = failureFilterActive
+    ? runs.filter((run) => run.status?.toLowerCase() === 'failed')
+    : runs
 
   if (loading && runs.length === 0) return <main className="page"><PageLoader label="加载 AI 运行记录" /></main>
   return (
@@ -94,14 +103,28 @@ export function RunsPage() {
         <div className="metric-card"><div className="metric-icon blue"><Gauge size={20} /></div><div><span>平均耗时</span><strong>{summary.average ? `${(summary.average / 1000).toFixed(1)}s` : '—'}</strong><small>端到端模型延迟</small></div></div>
         <div className="metric-card"><div className="metric-icon purple"><Zap size={20} /></div><div><span>Token 用量</span><strong>{summary.tokens == null ? '—' : summary.tokens.toLocaleString()}</strong><small>输入与输出合计</small></div></div>
         <div className="metric-card"><div className="metric-icon amber"><AlertTriangle size={20} /></div><div><span>降级完成</span><strong>{summary.degraded}</strong><small>首选能力不可用时的可用结果</small></div></div>
+        <button
+          type="button"
+          className="metric-card run-metric-filter"
+          aria-pressed={failureFilterActive}
+          disabled={summary.failed === 0}
+          title={summary.failed === 0 ? '当前没有失败调用' : failureFilterActive ? '显示全部运行记录' : '只查看失败调用'}
+          onClick={() => {
+            setExpanded(null)
+            setStatusFilter(failureFilterActive ? 'all' : 'failed')
+          }}
+        >
+          <div className="metric-icon red"><CircleX size={20} /></div><div><span>失败调用</span><strong>{summary.failed}</strong><small>需要检查的模型或任务错误</small></div>
+        </button>
       </section>
       <section className="section-block">
-        <div className="section-heading"><div><h2>调用明细</h2><p>最近的记录显示在最前</p></div><span className="result-count">{runs.length} 条</span></div>
+        <div className="section-heading"><div><h2>调用明细</h2><p>{failureFilterActive ? '仅显示需要检查的失败记录' : '最近的记录显示在最前'}</p></div><span className="result-count">{failureFilterActive ? `${visibleRuns.length} 条失败` : `${runs.length} 条`}</span></div>
         {runs.length === 0 ? <EmptyState icon={<Cpu size={26} />} title="还没有 AI 运行记录" description="创建一个项目后，模型调用或降级处理会记录在这里。" /> : (
           <div className="run-list">
-            {runs.map((run) => {
+            {visibleRuns.map((run) => {
               const isSuccess = run.status === 'success' || run.status === 'succeeded'
               const open = expanded === run.id
+              const generatedImages = run.operation === 'image_generation' ? (run.image_count ?? (isSuccess ? 1 : null)) : null
               return <article className={`run-row${open ? ' expanded' : ''}`} key={run.id}>
                 <button type="button" className="run-summary" onClick={() => setExpanded(open ? null : run.id)}>
                   <span className={`run-status-icon ${run.degraded ? 'degraded' : isSuccess ? 'success' : 'failed'}`}>{run.degraded ? <AlertTriangle size={17} /> : isSuccess ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}</span>
@@ -112,7 +135,7 @@ export function RunsPage() {
                   <ChevronDown size={16} className={open ? 'rotated' : ''} />
                 </button>
                 {open && <div className="run-detail">
-                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '降级完成' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {providerLabel(run) || '—'}</strong></div><div><span>Token</span><strong>{formatRunTokenUsage(run)}</strong></div>
+                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '降级完成' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {providerLabel(run) || '—'}</strong></div><div><span>{run.operation === 'image_generation' ? '生成数量' : 'Token'}</span><strong>{run.operation === 'image_generation' ? (generatedImages == null ? '—' : `${generatedImages} 张`) : formatRunTokenUsage(run)}</strong></div>
                   {(run.error_message || run.degraded) && <p className="run-message"><AlertTriangle size={15} /> {run.error_message || '首选模型能力暂不可用，本次已通过备用能力完成，结果已正常持久化。'}</p>}
                 </div>}
               </article>

@@ -22,6 +22,7 @@ export type Route =
   | { name: 'processing'; projectId: string; jobId?: string }
   | { name: 'project'; projectId: string }
   | { name: 'assets' }
+  | { name: 'asset-generate'; generationId?: string }
   | { name: 'runs' }
   | { name: 'demo' }
   | { name: 'not-found' }
@@ -30,6 +31,10 @@ function parseLocation(): Route {
   const path = window.location.pathname.replace(/\/+$/, '') || '/'
   if (path === '/' || path === '/projects') return { name: 'dashboard' }
   if (path === '/projects/new') return { name: 'new' }
+  if (path === '/assets/generate') return {
+    name: 'asset-generate',
+    generationId: new URLSearchParams(window.location.search).get('generation') || undefined,
+  }
   if (path === '/assets') return { name: 'assets' }
   if (path === '/runs') return { name: 'runs' }
   if (path === '/demo') return { name: 'demo' }

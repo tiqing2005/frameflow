@@ -12,6 +12,7 @@ import {
   Film,
   GripVertical,
   Image,
+  ImagePlus,
   Info,
   ListVideo,
   LoaderCircle,
@@ -39,8 +40,9 @@ import {
   StatusPill,
   useToast,
 } from '../components/ui'
+import { SegmentImageGenerationDialog } from '../components/ImageGenerationStudio'
 import { addNavigationGuard, AppLink, navigate } from '../router'
-import type { Asset, Job, PreviewRender, ProjectDetail, ProjectPreviewResponse, ProjectTimeline, Recommendation, Segment, Selection, TimelineTimingStrategy } from '../types'
+import type { Asset, ImageGenerationAcceptResponse, Job, PreviewRender, ProjectDetail, ProjectPreviewResponse, ProjectTimeline, Recommendation, Segment, Selection, TimelineTimingStrategy } from '../types'
 
 interface SegmentDraft { text: string; topic: string; keywords: string }
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
@@ -79,6 +81,13 @@ const preciseDuration = (durationMs: number) => {
   return `${minutes}:${seconds}`
 }
 
+const imagePromptForSegment = (segment: Segment) => [
+  '为一段视频字幕生成一张写实、可直接剪辑使用的配图。画面中不要出现文字、水印或界面元素，并为字幕保留清晰空间。',
+  `字幕内容：${segment.text}`,
+  segment.topic ? `内容主题：${segment.topic}` : '',
+  segment.keywords.length ? `画面关键词：${segment.keywords.join('、')}` : '',
+].filter(Boolean).join('\n')
+
 export function WorkbenchPage({ projectId }: { projectId: string }) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -108,6 +117,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
   const [previewError, setPreviewError] = useState('')
   const [timingBusy, setTimingBusy] = useState<'segment' | 'fit' | 'restore' | null>(null)
   const [timingError, setTimingError] = useState('')
+  const [generationContext, setGenerationContext] = useState<{ segment: Segment; prompt: string } | null>(null)
   const saveTimer = useRef<number | null>(null)
   const savedResetTimer = useRef<number | null>(null)
   const detailRef = useRef<ProjectDetail | null>(null)
@@ -142,15 +152,18 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
 
   const updateSegmentById = useCallback((segmentId: string, updater: (segment: Segment) => Segment, expectedProjectId = projectIdRef.current) => {
     if (!mountedRef.current || projectIdRef.current !== expectedProjectId) return
-    setDetail((current) => {
-      if (!current) return current
-      const next = {
-        ...current,
-        segments: current.segments.map((segment) => segment.id === segmentId ? updater(segment) : segment),
-      }
-      detailRef.current = next
-      return next
-    })
+    // Keep the imperative snapshot in sync before React schedules a render.
+    // Callers such as “save subtitle → open image generator” intentionally
+    // read detailRef immediately after awaiting the save request; updating the
+    // ref only inside a state updater could expose the previous subtitle.
+    const current = detailRef.current
+    if (!current) return
+    const next = {
+      ...current,
+      segments: current.segments.map((segment) => segment.id === segmentId ? updater(segment) : segment),
+    }
+    detailRef.current = next
+    setDetail(next)
   }, [])
 
   const load = useCallback(async (showLoader = false, discardDraft = false) => {
@@ -752,6 +765,33 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
     })
   }
 
+  const openImageGenerator = async () => {
+    if (!selectedIdRef.current || generationContext || timingActionAbort.current) return
+    if (!await ensureSaved()) return
+    const current = detailRef.current?.segments.find((item) => item.id === selectedIdRef.current)
+    if (!current) {
+      toast('当前字幕片段不存在，请重新加载项目', 'error')
+      return
+    }
+    setGenerationContext({ segment: current, prompt: imagePromptForSegment(current) })
+  }
+
+  const acceptGeneratedImage = (result: ImageGenerationAcceptResponse) => {
+    const context = generationContext
+    if (!context) return
+    const returned = result.segment
+    const returnedSelection = result.selection
+      ? { ...result.selection, asset: result.selection.asset || result.asset }
+      : null
+    updateSegmentById(context.segment.id, (current) => ({
+      ...current,
+      ...(returned || {}),
+      selection: returnedSelection || current.selection,
+    }))
+    setGenerationContext(null)
+    void loadPreviewOverview(false)
+  }
+
   const previewAsset = selectionAsset(selected)
   const selectedAssetId = selected?.selection?.asset_id || selected?.recommendations[0]?.asset.id
   const transcript = detail?.source?.transcript || detail?.source?.text || segments.map((item) => item.text).join('\n')
@@ -852,7 +892,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
                   <div className="subtitle-overlay"><span>{draft.text || '输入字幕内容'}</span></div>
                   <div className="preview-badge">片段 {selectedIndex + 1} / {segments.length}</div>
                 </div>
-                <div className="preview-caption"><span>{previewAsset?.name || '尚未选择画面'}</span><span>{selected.selection?.source === 'manual' ? '人工选择' : '智能推荐'}</span></div>
+                <div className="preview-caption"><span>{previewAsset?.name || '尚未选择画面'}</span><span>{selected.selection?.source === 'generated' ? '文生图' : selected.selection?.source === 'manual' ? '人工选择' : '智能推荐'}</span></div>
               </div>
 
               <TimelinePreview
@@ -896,13 +936,14 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
           {query || searchKind || searchTag ? (
             <div className="search-result-view">
               <div className="result-label"><span>素材库搜索结果</span>{searching && <LoaderCircle className="spin" size={15} />}</div>
-              {!searching && searchResults.length === 0 ? <EmptyState icon={<Search size={22} />} title="没有匹配素材" description="换一个关键词，或前往素材库上传新画面。" /> : (
+              {!searching && searchResults.length === 0 ? <EmptyState icon={<Search size={22} />} title="没有匹配素材" description="可以换一个关键词，也可以按当前字幕生成一张新画面。" action={<button type="button" className="button button-primary button-small" disabled={timingBusy !== null} onClick={() => void openImageGenerator()}><ImagePlus size={15} /> 生成新画面</button>} /> : (
                 <div className="replacement-grid">
                   {searchResults.map((asset) => (
                     <button type="button" key={asset.id} className={`replacement-card${selectedAssetId === asset.id ? ' selected' : ''}`} disabled={timingBusy !== null || selectingAsset !== null} onClick={() => void selectAsset(asset)}>
                       <AssetVisual asset={asset} /><span><strong>{asset.name}</strong><small>{asset.tags.slice(0, 2).join(' · ') || '未添加标签'}</small></span>{selectingAsset === asset.id && <LoaderCircle className="spin card-loader" size={18} />}
                     </button>
                   ))}
+                  <button type="button" className="generation-candidate-cta" disabled={timingBusy !== null} onClick={() => void openImageGenerator()}><ImagePlus size={16} /><span><strong>没有合适的结果？</strong><small>按当前字幕生成一张新画面</small></span></button>
                 </div>
               )}
             </div>
@@ -910,7 +951,7 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
             <div className="candidate-list">
               {(selected?.recommendations || []).length > 0 && (selected?.recommendations || []).length < 3 && <div className="inline-warning"><AlertTriangle size={16} /> 服务端仅返回 {(selected?.recommendations || []).length} 个候选，请重新匹配后再确认画面。</div>}
               {(selected?.recommendations || []).length === 0 ? (
-                <EmptyState icon={<Image size={24} />} title="暂无画面候选" description="点击右上角重新匹配，生成至少三个可解释候选。" action={<button type="button" className="button button-secondary button-small" onClick={() => void rematch()}>重新匹配</button>} />
+                <EmptyState icon={<Image size={24} />} title="暂无画面候选" description="可以重新计算素材匹配，也可以直接按当前字幕生成画面。" action={<div className="empty-state-actions"><button type="button" className="button button-secondary button-small" disabled={timingBusy !== null || rematching} onClick={() => void rematch()}>重新匹配</button><button type="button" className="button button-primary button-small" disabled={timingBusy !== null} onClick={() => void openImageGenerator()}><ImagePlus size={15} /> 生成新画面</button></div>} />
               ) : selected?.recommendations.map((candidate, index) => (
                 <CandidateCard
                   key={candidate.id || candidate.asset.id}
@@ -922,11 +963,13 @@ export function WorkbenchPage({ projectId }: { projectId: string }) {
                   onSelect={() => void selectAsset(candidate.asset)}
                 />
               ))}
+              {(selected?.recommendations || []).length > 0 && <button type="button" className="generation-candidate-cta" disabled={timingBusy !== null} onClick={() => void openImageGenerator()}><ImagePlus size={16} /><span><strong>候选都不合适？</strong><small>按本段字幕生成一张新画面</small></span></button>}
             </div>
           )}
           <div className="match-method"><CircleHelp size={16} /><p><strong>匹配公式</strong><br />55% 语义相似度 + 30% 关键词重合 + 15% 主题/标签重合</p></div>
         </aside>
       </div>
+      {generationContext && <SegmentImageGenerationDialog segment={generationContext.segment} initialPrompt={generationContext.prompt} onClose={() => setGenerationContext(null)} onAccepted={acceptGeneratedImage} />}
     </main>
   )
 }

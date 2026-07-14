@@ -4,6 +4,7 @@ import {
   Filter,
   FolderOpen,
   Image as ImageIcon,
+  ImagePlus,
   Play,
   Plus,
   Search,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react'
 import { api, errorMessage, isAbortError } from '../api'
 import { AssetVisual, EmptyState, ErrorState, formatDate, InlineSpinner, PageLoader, useToast } from '../components/ui'
+import { AppLink } from '../router'
 import type { Asset } from '../types'
 
 const ASSET_FILE_PATTERN = /\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i
@@ -203,7 +205,10 @@ export function AssetsPage() {
     <main className="page assets-page">
       <div className="page-heading-row compact-heading">
         <div><h1>素材库</h1><p>管理图片和视频，为内容片段提供可检索的画面来源。</p></div>
-        <button type="button" className="button button-primary heading-action" onClick={() => setUploadOpen(true)}><Plus size={17} /> 上传素材</button>
+        <div className="heading-actions">
+          <button type="button" className="button button-secondary" onClick={() => setUploadOpen(true)}><Plus size={17} /> 上传素材</button>
+          <AppLink href="/assets/generate" className="button button-primary"><ImagePlus size={17} /> 生成图片</AppLink>
+        </div>
       </div>
 
       <div className="asset-toolbar">

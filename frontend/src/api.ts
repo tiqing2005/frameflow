@@ -7,6 +7,10 @@ import type {
   CreateProjectResponse,
   Dashboard,
   FaultResponse,
+  ImageAspectRatio,
+  ImageGenerationAcceptResponse,
+  ImageGenerationCreateResponse,
+  ImageGenerationDetailResponse,
   JobDetail,
   Paged,
   Project,
@@ -31,6 +35,20 @@ export function setCsrfToken(value: string | null) {
 export interface ApiCallOptions {
   signal?: AbortSignal
   timeoutMs?: number
+}
+
+export interface CreateImageGenerationInput {
+  prompt: string
+  name?: string
+  aspect_ratio: ImageAspectRatio
+  auto_import?: boolean
+  auto_select?: boolean
+}
+
+export interface AcceptImageGenerationInput {
+  name: string
+  select_for_segment: boolean
+  expected_segment_version?: number | null
 }
 
 export class ApiError extends Error {
@@ -203,6 +221,38 @@ export const api = {
     request<Asset>(`/assets/${encodeURIComponent(id)}/retag`, { method: 'POST' }, options),
   deleteAsset: (id: string, options?: ApiCallOptions) =>
     request<void>(`/assets/${encodeURIComponent(id)}`, { method: 'DELETE' }, options),
+  imageGenerations: (options?: ApiCallOptions) =>
+    request<Paged<ImageGenerationDetailResponse['generation']> | ImageGenerationDetailResponse['generation'][]>(
+      '/image-generations',
+      {},
+      options,
+    ).then((data) => Array.isArray(data) ? { items: data, total: data.length } : data),
+  imageGeneration: (id: string, options?: ApiCallOptions) =>
+    request<ImageGenerationDetailResponse>(`/image-generations/${encodeURIComponent(id)}`, {}, options),
+  createImageGeneration: (input: CreateImageGenerationInput, idempotencyKey: string, options?: ApiCallOptions) =>
+    request<ImageGenerationCreateResponse>('/image-generations', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(input),
+    }, options),
+  createSegmentImageGeneration: (segmentId: string, input: CreateImageGenerationInput, idempotencyKey: string, options?: ApiCallOptions) =>
+    request<ImageGenerationCreateResponse>(`/segments/${encodeURIComponent(segmentId)}/image-generations`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(input),
+    }, options),
+  retryImageGeneration: (id: string, options?: ApiCallOptions) =>
+    request<ImageGenerationCreateResponse>(`/image-generations/${encodeURIComponent(id)}/retry`, { method: 'POST' }, options),
+  cancelImageGeneration: (id: string, options?: ApiCallOptions) =>
+    request<ImageGenerationCreateResponse>(`/image-generations/${encodeURIComponent(id)}/cancel`, { method: 'POST' }, options),
+  acceptImageGeneration: (id: string, input: AcceptImageGenerationInput, idempotencyKey: string, options?: ApiCallOptions) =>
+    request<ImageGenerationAcceptResponse>(`/image-generations/${encodeURIComponent(id)}/accept`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(input),
+    }, options),
+  discardImageGeneration: (id: string, options?: ApiCallOptions) =>
+    request<void>(`/image-generations/${encodeURIComponent(id)}`, { method: 'DELETE' }, options),
   runs: (options?: ApiCallOptions) => request<Paged<Run> | Run[]>('/runs', {}, options).then((data) =>
     Array.isArray(data) ? { items: data, total: data.length } : data,
   ),

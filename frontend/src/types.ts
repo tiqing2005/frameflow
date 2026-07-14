@@ -2,6 +2,8 @@ export type ProjectStatus = 'queued' | 'processing' | 'ready' | 'failed' | 'canc
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
 export type AssetTaggingStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'degraded'
 export type AssetTaggingSource = 'vision' | 'text_llm' | 'rules'
+export type ImageGenerationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+export type ImageAspectRatio = '16:9' | '1:1' | '9:16'
 export type JobStage =
   | 'validating'
   | 'extracting'
@@ -95,6 +97,8 @@ export interface Asset {
   tagging_requested_at?: string | null
   tagging_started_at?: string | null
   tagging_finished_at?: string | null
+  source?: 'seed' | 'upload' | 'generated' | string
+  generation_id?: string | null
 }
 
 export interface Recommendation {
@@ -116,7 +120,7 @@ export interface Selection {
   id?: string
   segment_id: string
   asset_id: string
-  source: 'auto' | 'manual'
+  source: 'auto' | 'manual' | 'generated'
   asset?: Asset
   updated_at?: string
 }
@@ -135,6 +139,8 @@ export interface Segment {
   recommendations: Recommendation[]
   selection: Selection | null
 }
+
+export type SegmentSummary = Omit<Segment, 'recommendations' | 'selection'>
 
 export interface ProjectDetail {
   project: Project
@@ -237,8 +243,57 @@ export interface Run {
   input_tokens?: number | null
   output_tokens?: number | null
   total_tokens?: number | null
+  image_count?: number | null
   error_message?: string | null
   created_at: string
+}
+
+export interface ImageGeneration {
+  id: string
+  project_id?: string | null
+  segment_id?: string | null
+  segment_version?: number | null
+  source?: 'library' | 'segment' | string
+  prompt: string
+  name?: string | null
+  aspect_ratio: ImageAspectRatio
+  provider?: string | null
+  model?: string | null
+  status: ImageGenerationStatus
+  progress?: number | null
+  attempt?: number
+  max_attempts?: number
+  retryable?: boolean
+  error_code?: string | null
+  error_message?: string | null
+  content_url?: string | null
+  asset_id?: string | null
+  auto_import?: boolean
+  auto_select?: boolean
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+  accepted_at?: string | null
+  discarded_at?: string | null
+  expires_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ImageGenerationCreateResponse {
+  generation: ImageGeneration
+  idempotent_replay?: boolean
+}
+
+export interface ImageGenerationDetailResponse {
+  generation: ImageGeneration
+  asset?: Asset | null
+  selection?: Selection | null
+  segment?: SegmentSummary | null
+}
+
+export interface ImageGenerationAcceptResponse extends ImageGenerationDetailResponse {
+  asset: Asset
+  idempotent_replay?: boolean
 }
 
 export interface AuditEvent {

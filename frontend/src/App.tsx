@@ -24,10 +24,11 @@ import { AssetsPage } from './pages/AssetsPage'
 import { RunsPage } from './pages/RunsPage'
 import { DemoPage } from './pages/DemoPage'
 import { LoginPage } from './pages/LoginPage'
+import { ImageGenerationPage } from './pages/ImageGenerationPage'
 
 const navItems = [
   { label: '项目', path: '/projects', icon: FolderKanban, routes: ['dashboard', 'new', 'processing', 'project'] },
-  { label: '素材库', path: '/assets', icon: Image, routes: ['assets'] },
+  { label: '素材库', path: '/assets', icon: Image, routes: ['assets', 'asset-generate'] },
   { label: '运行记录', path: '/runs', icon: Bot, routes: ['runs'] },
 ]
 
@@ -38,6 +39,7 @@ function PageContent({ route }: { route: Route }) {
     case 'processing': return <ProcessingPage key={`${route.projectId}:${route.jobId || ''}`} projectId={route.projectId} initialJobId={route.jobId} />
     case 'project': return <WorkbenchPage projectId={route.projectId} />
     case 'assets': return <AssetsPage />
+    case 'asset-generate': return <ImageGenerationPage generationId={route.generationId} />
     case 'runs': return <RunsPage />
     case 'demo': return <DemoPage />
     default: return (
