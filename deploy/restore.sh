@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 
 require_runtime
 require_env
+validate_edge_mode
 require_command tar
 require_command sha256sum
 
@@ -29,6 +30,7 @@ fi
 archive_dir="$(cd "$(dirname "$archive")" && pwd)"
 archive_name="$(basename "$archive")"
 original_volume="$(env_value DATA_VOLUME_NAME frameflow_data)"
+mapfile -t services < <(release_services)
 restored_volume="${original_volume}_restored_$(date -u +%Y%m%dT%H%M%SZ)_$$"
 docker volume create "$restored_volume" >/dev/null
 activated=false
@@ -66,7 +68,7 @@ if docker volume inspect "$original_volume" >/dev/null 2>&1; then
 fi
 
 upsert_env DATA_VOLUME_NAME "$restored_volume"
-if compose up -d --remove-orphans --force-recreate frameflow caddy && wait_release_ready 90; then
+if compose up -d --remove-orphans --force-recreate "${services[@]}" && wait_release_ready 90; then
   activated=true
   printf '恢复完成：%s\n' "$archive"
   if [[ "$original_exists" == true ]]; then
@@ -80,7 +82,7 @@ show_release_diagnostics
 if [[ "$original_exists" == true ]]; then
   printf '恢复版本未通过发布验收，正在切回原数据卷 %s……\n' "$original_volume" >&2
   upsert_env DATA_VOLUME_NAME "$original_volume"
-  if compose up -d --remove-orphans --force-recreate frameflow caddy && wait_release_ready 90; then
+  if compose up -d --remove-orphans --force-recreate "${services[@]}" && wait_release_ready 90; then
     die "恢复失败，已自动切回原数据卷；安全备份位于 ${safety_backup}"
   fi
   show_release_diagnostics

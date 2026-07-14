@@ -58,9 +58,35 @@ upsert_env() {
   mv "$tmp" "$ENV_FILE"
 }
 
+edge_mode() {
+  env_value FRAMEFLOW_EDGE_MODE caddy
+}
+
+using_external_nginx() {
+  [[ "$(edge_mode)" == "external-nginx" ]]
+}
+
+validate_edge_mode() {
+  case "$(edge_mode)" in
+    caddy|external-nginx) ;;
+    *) die "FRAMEFLOW_EDGE_MODE 仅支持 caddy 或 external-nginx" ;;
+  esac
+}
+
+release_services() {
+  printf '%s\n' frameflow
+  if ! using_external_nginx; then
+    printf '%s\n' caddy
+  fi
+}
+
 compose() {
+  local -a files=(-f "$ROOT_DIR/docker-compose.yml")
+  if using_external_nginx; then
+    files+=(-f "$ROOT_DIR/deploy/docker-compose.external-nginx.yml")
+  fi
   FRAMEFLOW_ENV_FILE="$ENV_FILE" docker compose \
-    --project-directory "$ROOT_DIR" --env-file "$ENV_FILE" "$@"
+    --project-directory "$ROOT_DIR" --env-file "$ENV_FILE" "${files[@]}" "$@"
 }
 
 wait_ready() {
@@ -111,6 +137,48 @@ validate_auth_state() {
   elif [[ -f "$snippet" ]]; then
     die "ENABLE_BASIC_AUTH=false，但鉴权片段仍存在；请运行 deploy/configure-auth.sh disable"
   fi
+}
+
+validate_application_auth_state() {
+  local enabled local_setup password_hash plaintext_password
+  enabled="$(env_value FRAMEFLOW_AUTH_ENABLED true)"
+  is_true "$enabled" || die "公网部署必须启用 FRAMEFLOW_AUTH_ENABLED=true"
+
+  local_setup="$(env_value FRAMEFLOW_AUTH_LOCAL_SETUP_ENABLED false)"
+  is_true "$local_setup" \
+    && die "公网部署不得开放浏览器首次认领，请设置 FRAMEFLOW_AUTH_LOCAL_SETUP_ENABLED=false"
+
+  plaintext_password="$(env_value FRAMEFLOW_AUTH_PASSWORD)"
+  [[ -z "$plaintext_password" ]] \
+    || die "deploy/.env 不得保存 FRAMEFLOW_AUTH_PASSWORD 明文，请只配置密码哈希"
+
+  password_hash="$(env_value FRAMEFLOW_AUTH_PASSWORD_HASH)"
+  [[ "$password_hash" =~ ^pbkdf2_sha256\$[0-9]{6,7}\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]+$ ]] \
+    || die "FRAMEFLOW_AUTH_PASSWORD_HASH 缺失或格式无效，请重新执行 first-deploy.sh"
+}
+
+generate_application_password_hash() {
+  local runtime
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import hashlib' >/dev/null 2>&1; then
+    runtime=python3
+  elif command -v python >/dev/null 2>&1 && python -c 'import hashlib' >/dev/null 2>&1; then
+    runtime=python
+  else
+    die "缺少可用的 Python 3，无法生成应用管理员密码哈希"
+  fi
+  "$runtime" -c '
+import base64
+import hashlib
+import secrets
+import sys
+
+password = sys.stdin.buffer.read()
+salt = secrets.token_bytes(16)
+iterations = 310_000
+digest = hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+encode = lambda value: base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+print(f"pbkdf2_sha256${iterations}${encode(salt)}${encode(digest)}")
+'
 }
 
 public_smoke_once() {
@@ -194,14 +262,20 @@ run_public_smoke() {
 wait_release_ready() {
   local attempts="${1:-90}"
   wait_ready "$attempts" || return 1
-  wait_caddy "$attempts" || return 1
-  validate_caddy_config || return 1
+  if ! using_external_nginx; then
+    wait_caddy "$attempts" || return 1
+    validate_caddy_config || return 1
+  fi
   run_public_smoke
 }
 
 show_release_diagnostics() {
   compose ps >&2 || true
-  compose logs --tail=150 frameflow caddy >&2 || true
+  if using_external_nginx; then
+    compose logs --tail=150 frameflow >&2 || true
+  else
+    compose logs --tail=150 frameflow caddy >&2 || true
+  fi
 }
 
 sqlite_check_volume() {

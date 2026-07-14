@@ -14,6 +14,7 @@ action="${1:-status}"
 
 restart_caddy_if_running() {
   [[ "${FRAMEFLOW_AUTH_NO_RESTART:-0}" == 1 ]] && return 0
+  using_external_nginx && return 0
   if compose ps --status running --services 2>/dev/null | grep -qx caddy; then
     compose up -d --no-deps --force-recreate caddy
   fi

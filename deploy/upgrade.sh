@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 
 require_runtime
 require_env
+validate_edge_mode
 cd "$ROOT_DIR"
 
 if [[ "${SKIP_GIT_PULL:-0}" != 1 ]]; then
@@ -15,11 +16,13 @@ if [[ "${SKIP_GIT_PULL:-0}" != 1 ]]; then
 fi
 
 validate_auth_state
+validate_application_auth_state
 compose config --quiet
 tag="$(env_value FRAMEFLOW_TAG latest)"
 image="frameflow:$tag"
 rollback="frameflow:rollback-$(date -u +%Y%m%dT%H%M%SZ)"
 old_image_id="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
+mapfile -t services < <(release_services)
 if [[ -n "$old_image_id" ]]; then
   docker tag "$old_image_id" "$rollback"
 fi
@@ -42,7 +45,7 @@ show_release_diagnostics
 if [[ -n "$old_image_id" ]]; then
   printf '新版本未就绪，正在回滚应用镜像……\n' >&2
   docker tag "$old_image_id" "$image"
-  compose up -d --no-build --force-recreate frameflow caddy
+  compose up -d --no-build --force-recreate "${services[@]}"
   wait_release_ready 90 || {
     show_release_diagnostics
     die "自动回滚后发布验收仍失败，请人工处理"

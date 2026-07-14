@@ -53,12 +53,18 @@ function Test-BackendContract {
     try {
         $apiBase = $HealthUri -replace '/api/v1/health/(live|ready)$', ''
         $spec = Invoke-RestMethod -Uri "$apiBase/api/openapi.json" -TimeoutSec 3
-        $requiredPaths = @(
-            '/api/v1/projects/{project_id}/timeline',
-            '/api/v1/projects/{project_id}/preview'
+        $requiredOperations = @(
+            @{ Path = '/api/v1/projects/{project_id}/timeline'; Method = 'get' },
+            @{ Path = '/api/v1/projects/{project_id}/preview'; Method = 'get' },
+            @{ Path = '/api/v1/projects/{project_id}/preview'; Method = 'post' },
+            @{ Path = '/api/v1/auth/session'; Method = 'get' },
+            @{ Path = '/api/v1/auth/login'; Method = 'post' },
+            @{ Path = '/api/v1/assets/{asset_id}'; Method = 'delete' }
         )
-        foreach ($path in $requiredPaths) {
-            if ($null -eq $spec.paths.PSObject.Properties[$path]) {
+        foreach ($operation in $requiredOperations) {
+            $pathSpec = $spec.paths.PSObject.Properties[$operation.Path]
+            if ($null -eq $pathSpec -or
+                $null -eq $pathSpec.Value.PSObject.Properties[$operation.Method]) {
                 return $false
             }
         }

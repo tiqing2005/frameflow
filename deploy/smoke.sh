@@ -7,7 +7,9 @@ source "$SCRIPT_DIR/common.sh"
 
 require_runtime
 require_env
+validate_edge_mode
 validate_auth_state
+validate_application_auth_state
 compose config --quiet
 
 if ! wait_release_ready "${FRAMEFLOW_SMOKE_READY_ATTEMPTS:-30}"; then

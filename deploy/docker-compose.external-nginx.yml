@@ -1,0 +1,9 @@
+services:
+  frameflow:
+    ports:
+      - "127.0.0.1:${FRAMEFLOW_HOST_PORT:-8080}:8000"
+
+  # 外部 Nginx 模式不启动 Caddy；显式 profile 防止普通 `up -d` 抢占宿主机 80/443。
+  caddy:
+    profiles:
+      - bundled-caddy
