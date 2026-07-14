@@ -130,6 +130,7 @@ export interface Segment {
   keywords: string[]
   start_ms?: number | null
   end_ms?: number | null
+  render_duration_ms?: number | null
   version: number
   recommendations: Recommendation[]
   selection: Selection | null
@@ -156,6 +157,10 @@ export interface TimelineItem {
   start_ms?: number | null
   end_ms?: number | null
   duration_ms: number
+  render_duration_ms?: number | null
+  auto_duration_ms?: number
+  effective_duration_ms?: number
+  duration_source?: 'auto' | 'manual'
   asset?: Asset | null
 }
 
@@ -164,8 +169,21 @@ export interface ProjectTimeline {
   input_hash: string
   segment_count: number
   duration_ms: number
+  limits?: {
+    segment_min_duration_ms: number
+    segment_max_duration_ms: number
+    timeline_max_duration_ms: number
+    frame_duration_ms?: number
+  }
   items: TimelineItem[]
 }
+
+export interface SegmentTimingResponse {
+  segment: Segment
+  timeline: ProjectTimeline
+}
+
+export type TimelineTimingStrategy = 'text' | 'current' | 'equal'
 
 export interface PreviewRender {
   id: string

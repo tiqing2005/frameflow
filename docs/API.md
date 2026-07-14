@@ -103,6 +103,7 @@
   "keywords": ["智能城市", "传感器", "技术"],
   "start_ms": null,
   "end_ms": null,
+  "render_duration_ms": null,
   "version": 1,
   "recommendations": [
     {
@@ -151,6 +152,12 @@
   "input_hash": "sha256...",
   "segment_count": 2,
   "duration_ms": 6000,
+  "limits": {
+    "segment_min_duration_ms": 1000,
+    "segment_max_duration_ms": 30000,
+    "timeline_max_duration_ms": 180000,
+    "frame_duration_ms": 40
+  },
   "items": [
     {
       "segment_id": "segment-id",
@@ -160,13 +167,17 @@
       "start_ms": 0,
       "end_ms": 3000,
       "duration_ms": 3000,
+      "render_duration_ms": null,
+      "auto_duration_ms": 3000,
+      "effective_duration_ms": 3000,
+      "duration_source": "auto",
       "asset": {}
     }
   ]
 }
 ```
 
-时间线只返回公开素材字段，不返回磁盘 `storage_path`。文本项目按字幕长度计算确定性片段时长；具有有效时间戳的字幕优先使用时间戳并限制在安全范围内。
+时间线只返回公开素材字段，不返回磁盘 `storage_path`。`auto_duration_ms` 来自字幕时间戳或确定性文本估算；`render_duration_ms` 是可空的画面展示时长覆盖值；`effective_duration_ms`/`duration_ms` 是实际用于预览的最终值。时长编辑按 25fps 的 40ms 帧对齐，客户端应以后端响应值为准。
 
 ```json
 {
@@ -205,9 +216,11 @@
 | 400 | `INVALID_INPUT`, `INVALID_FILE_TYPE` | 请求语义/文件不合法 |
 | 404 | `PROJECT_NOT_FOUND`, `JOB_NOT_FOUND`, `ASSET_NOT_FOUND` | 资源不存在 |
 | 409 | `SEGMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 版本、幂等请求或状态迁移冲突 |
+| 409 | `TIMELINE_INPUT_CONFLICT` | 批量时长请求使用了过期的时间线指纹 |
 | 409 | `ASSET_IN_USE`, `MINIMUM_ASSET_GUARD` | 素材仍被片段使用，或停用后会低于 3 个启用素材 |
 | 413 | `UPLOAD_TOO_LARGE` | 超过服务端上传限制 |
 | 422 | `VALIDATION_ERROR` | Pydantic 字段校验失败，仍尽量包装为统一格式 |
+| 422 | `TIMELINE_DURATION_INFEASIBLE`, `TIMELINE_TOO_LONG` | 目标无法满足单段边界，或超过预览总时长上限 |
 | 429 | `RATE_LIMITED` | 超过当前客户端的读/写请求速率限制 |
 | 500 | `INTERNAL_ERROR` | 未预期服务端错误，不返回堆栈 |
 | 503 | `NOT_READY`, `ASR_NOT_CONFIGURED`, `AI_PROVIDER_UNAVAILABLE` | 依赖未就绪或短暂不可用 |
@@ -402,6 +415,22 @@ Body：
 - 关键词清理空值、不区分大小写去重，最多 20 个，单项最多 60 字符。
 - 成功返回更新后 Segment，`version + 1`，写入 AuditEvent。
 
+### PATCH `/api/v1/segments/{segment_id}/timing`
+
+只修改画面展示时长，不改写 ASR 的 `start_ms/end_ms`，也不触发素材重新匹配。
+
+```json
+{
+  "duration_ms": 7520,
+  "version": 2
+}
+```
+
+- `duration_ms` 为 `null` 时恢复该片段的自动时长；非空时须在 1000–30000ms，服务端归一到最近的 40ms 帧。
+- `version` 与正文编辑共用同一个乐观锁；冲突返回 409 `SEGMENT_VERSION_CONFLICT`。
+- 调整后总时长不得超过 `FRAMEFLOW_PREVIEW_MAX_SECONDS`；超限返回 422 `TIMELINE_TOO_LONG`。
+- 成功返回 `{"segment": {...}, "timeline": {...}}`。响应包含归一化后的真实值，变更会递增 Segment `version` 并写入 `segment.timing_updated` 审计事件。
+
 ### PUT `/api/v1/projects/{project_id}/segments/order`
 
 ```json
@@ -481,6 +510,25 @@ Body：
 - `PREVIEW_SELECTION_MISSING`
 - `PREVIEW_ASSET_MISSING`
 
+### PUT `/api/v1/projects/{project_id}/timeline/timing`
+
+原子调整整个时间线。总时长是一次批量分配操作，不是持续约束；分配结果会写入每个片段的 `render_duration_ms`。
+
+```json
+{
+  "action": "fit",
+  "target_duration_ms": 30000,
+  "strategy": "text",
+  "expected_input_hash": "64位当前时间线哈希"
+}
+```
+
+- `action=fit` 必须提供目标时长；`strategy` 可为 `text`（字幕字数）、`current`（当前时长比例）或 `equal`（平均）。服务端在单段 1–30 秒边界内按 40ms 整帧精确分配，并返回实际归一化总长。
+- `action=restore_auto` 不接受目标时长，会清空所有片段的覆盖值；`strategy` 此时不参与计算。
+- `expected_input_hash` 必须等于最新时间线指纹；正文、顺序、素材选择或时长已变化时返回 409 `TIMELINE_INPUT_CONFLICT`，客户端应刷新后再操作。
+- 不可分配的目标返回 422 `TIMELINE_DURATION_INFEASIBLE`，超过项目预览上限返回 422 `TIMELINE_TOO_LONG`。
+- 成功返回最新 Timeline，并写入 `timeline.timing_fitted` 或 `timeline.timing_restored_auto` 审计事件。
+
 ### GET `/api/v1/projects/{project_id}/preview`
 
 返回：
@@ -492,7 +540,7 @@ Body：
 }
 ```
 
-已有预览时 `preview` 为 PreviewRender，并嵌套其当前 Job；尚未生成时为 `null`。
+已有预览时 `preview` 为 PreviewRender，并嵌套其当前 Job；尚未生成时为 `null`。服务端优先返回与当前 Timeline `input_hash` 相同的预览；仅当当前指纹没有预览时才回退到最近的历史预览，客户端据此显示“原预览已过期”。
 
 ### POST `/api/v1/projects/{project_id}/preview`
 

@@ -15,6 +15,8 @@ import type {
   ProjectTimeline,
   Run,
   Segment,
+  SegmentTimingResponse,
+  TimelineTimingStrategy,
 } from './types'
 
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
@@ -152,6 +154,24 @@ export const api = {
   cancelJob: (id: string, options?: ApiCallOptions) => request<JobDetail | { job: JobDetail['job'] }>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }, options),
   updateSegment: (id: string, changes: Partial<Pick<Segment, 'text' | 'topic' | 'keywords'>> & { version: number }, options?: ApiCallOptions) =>
     request<Segment>(`/segments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }, options),
+  updateSegmentTiming: (id: string, durationMs: number | null, version: number, options?: ApiCallOptions) =>
+    request<SegmentTimingResponse>(`/segments/${encodeURIComponent(id)}/timing`, {
+      method: 'PATCH',
+      body: JSON.stringify({ duration_ms: durationMs, version }),
+    }, options),
+  updateProjectTimelineTiming: (
+    id: string,
+    changes: {
+      action: 'fit' | 'restore_auto'
+      target_duration_ms?: number
+      strategy: TimelineTimingStrategy
+      expected_input_hash: string
+    },
+    options?: ApiCallOptions,
+  ) => request<ProjectTimeline>(`/projects/${encodeURIComponent(id)}/timeline/timing`, {
+    method: 'PUT',
+    body: JSON.stringify(changes),
+  }, options),
   reorderSegments: (projectId: string, segmentIds: string[], options?: ApiCallOptions) =>
     request<{ segments?: Segment[] } | Segment[]>(`/projects/${encodeURIComponent(projectId)}/segments/order`, {
       method: 'PUT',

@@ -5,8 +5,15 @@ from fastapi import APIRouter, Request
 from ..embeddings import get_semantic_scorer
 from ..errors import APIError, request_id
 from ..models import Segment
-from ..schemas import SegmentOrder, SegmentPatch, SelectionPut
-from ..services import patch_segment, project_detail, put_selection, rematch_segment, reorder_segments
+from ..schemas import SegmentOrder, SegmentPatch, SegmentTimingPatch, SelectionPut
+from ..services import (
+    patch_segment,
+    patch_segment_timing,
+    project_detail,
+    put_selection,
+    rematch_segment,
+    reorder_segments,
+)
 from ._deps import SessionDep, SettingsDep
 
 router = APIRouter(prefix="/api/v1", tags=["segments"])
@@ -18,6 +25,23 @@ def update_segment(
 ):
     return patch_segment(
         session, segment_id, payload, request_id(request), semantic_scorer=get_semantic_scorer(settings)
+    )
+
+
+@router.patch("/segments/{segment_id}/timing")
+def update_segment_timing(
+    segment_id: str,
+    payload: SegmentTimingPatch,
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+):
+    return patch_segment_timing(
+        session,
+        settings,
+        segment_id,
+        payload,
+        request_id(request),
     )
 
 
@@ -37,11 +61,8 @@ def get_project_segments(project_id: str, session: SessionDep):
 
 @router.post("/segments/{segment_id}/rematch")
 def post_rematch(segment_id: str, request: Request, session: SessionDep, settings: SettingsDep):
-    segment = session.get(Segment, segment_id)
-    if segment is None:
-        raise APIError(404, "SEGMENT_NOT_FOUND", "字幕片段不存在")
     return rematch_segment(
-        session, segment, request_id(request), semantic_scorer=get_semantic_scorer(settings)
+        session, segment_id, request_id(request), semantic_scorer=get_semantic_scorer(settings)
     )
 
 

@@ -201,6 +201,7 @@ def segment_base_dict(segment: Segment) -> dict[str, Any]:
         "keywords": loads(segment.keywords_json, []),
         "start_ms": segment.start_ms,
         "end_ms": segment.end_ms,
+        "render_duration_ms": segment.render_duration_ms,
         "version": segment.version,
         "created_at": iso(segment.created_at),
         "updated_at": iso(segment.updated_at),

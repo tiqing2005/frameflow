@@ -3,7 +3,8 @@ from __future__ import annotations
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from ..models import Selection, utcnow
+from ..errors import APIError
+from ..models import Segment, Selection, utcnow
 from ..serializers import selection_dict
 from .common import _get_asset, _get_segment, add_audit
 
@@ -15,7 +16,16 @@ def put_selection(
         # Pair with asset deactivation's write lock to preserve the invariant
         # that every Selection references an active Asset under concurrency.
         session.execute(text("BEGIN IMMEDIATE"))
-    segment = _get_segment(session, segment_id)
+    if session.get_bind().dialect.name == "postgresql":
+        # The segment row is the project-timeline mutex shared with timing
+        # updates, so an input-hash check cannot race a selection change.
+        segment = session.scalar(
+            select(Segment).where(Segment.id == segment_id).with_for_update()
+        )
+        if segment is None:
+            raise APIError(404, "SEGMENT_NOT_FOUND", "字幕片段不存在")
+    else:
+        segment = _get_segment(session, segment_id)
     asset = _get_asset(session, asset_id, active_only=True)
     selection = session.scalar(select(Selection).where(Selection.segment_id == segment.id))
     before = None

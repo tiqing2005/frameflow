@@ -65,6 +65,14 @@ class Database:
                     connection.execute(
                         text("CREATE INDEX IF NOT EXISTS ix_jobs_kind ON jobs (kind)")
                     )
+            segment_columns = {
+                column["name"] for column in inspect(self.engine).get_columns("segments")
+            }
+            if "render_duration_ms" not in segment_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text("ALTER TABLE segments ADD COLUMN render_duration_ms INTEGER")
+                    )
             asset_columns = {column["name"] for column in inspect(self.engine).get_columns("assets")}
             asset_migrations = {
                 "thumbnail_url": "TEXT",
@@ -154,6 +162,12 @@ class Database:
                 "tagging_finished_at": "TIMESTAMP WITH TIME ZONE",
             }
             with self.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE segments ADD COLUMN IF NOT EXISTS "
+                        "render_duration_ms INTEGER"
+                    )
+                )
                 for name, definition in asset_tagging_migrations.items():
                     if name not in asset_columns:
                         connection.execute(

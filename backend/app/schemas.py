@@ -62,6 +62,26 @@ class SegmentOrder(BaseModel):
         return self
 
 
+class SegmentTimingPatch(BaseModel):
+    duration_ms: int | None = Field(ge=1_000, le=30_000)
+    version: int = Field(ge=1)
+
+
+class TimelineTimingUpdate(BaseModel):
+    action: Literal["fit", "restore_auto"]
+    target_duration_ms: int | None = Field(default=None, ge=1_000)
+    strategy: Literal["text", "current", "equal"] = "text"
+    expected_input_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_action_fields(self):
+        if self.action == "fit" and self.target_duration_ms is None:
+            raise ValueError("适配总时长时必须提供 target_duration_ms")
+        if self.action == "restore_auto" and self.target_duration_ms is not None:
+            raise ValueError("恢复自动时长时不能提供 target_duration_ms")
+        return self
+
+
 class SelectionPut(BaseModel):
     asset_id: str = Field(min_length=1, max_length=64)
 

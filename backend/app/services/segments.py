@@ -3,15 +3,37 @@ from __future__ import annotations
 import json
 from typing import Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
+from ..config import Settings
 from ..errors import APIError
 from ..models import AIRun, Asset, Recommendation, Segment, Selection
 from ..nlp import extract_keywords, infer_topic, rank_assets_with_trace
-from ..schemas import SegmentPatch
+from ..schemas import SegmentPatch, SegmentTimingPatch
 from ..serializers import recommendation_dict, segment_base_dict, selection_dict
-from .common import _get_project, _get_segment, add_audit, dumps, stable_hash
+from .common import _get_project, add_audit, dumps, stable_hash
+from .previews import (
+    auto_duration_ms,
+    effective_duration_ms,
+    normalize_frame_duration_ms,
+    public_preview_plan,
+)
+
+
+def _begin_immediate_if_sqlite(session: Session) -> None:
+    if session.get_bind().dialect.name == "sqlite":
+        session.execute(text("BEGIN IMMEDIATE"))
+
+
+def _locked_segment(session: Session, segment_id: str) -> Segment:
+    statement = select(Segment).where(Segment.id == segment_id)
+    if session.get_bind().dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    segment = session.scalar(statement)
+    if segment is None:
+        raise APIError(404, "SEGMENT_NOT_FOUND", "字幕片段不存在")
+    return segment
 
 
 def _segment_detail(session: Session, segment: Segment) -> dict:
@@ -58,7 +80,7 @@ def _asset_rank_payloads(session: Session) -> list[dict]:
     ]
 
 
-def rematch_segment(
+def _rematch_segment_locked(
     session: Session,
     segment: Segment,
     request_id: str | None,
@@ -140,6 +162,27 @@ def rematch_segment(
     return _segment_detail(session, segment)
 
 
+def rematch_segment(
+    session: Session,
+    segment_id: str,
+    request_id: str | None,
+    actor: str = "user",
+    degraded: bool = False,
+    semantic_scorer: object | None = None,
+) -> dict:
+    """Rematch through the same timeline mutex used by timing mutations."""
+    _begin_immediate_if_sqlite(session)
+    segment = _locked_segment(session, segment_id)
+    return _rematch_segment_locked(
+        session,
+        segment,
+        request_id,
+        actor=actor,
+        degraded=degraded,
+        semantic_scorer=semantic_scorer,
+    )
+
+
 def patch_segment(
     session: Session,
     segment_id: str,
@@ -147,7 +190,8 @@ def patch_segment(
     request_id: str | None,
     semantic_scorer: object | None = None,
 ) -> dict:
-    segment = _get_segment(session, segment_id)
+    _begin_immediate_if_sqlite(session)
+    segment = _locked_segment(session, segment_id)
     if segment.version != payload.version:
         raise APIError(
             409,
@@ -178,16 +222,117 @@ def patch_segment(
         after=segment_base_dict(segment),
         request_id=request_id,
     )
-    return rematch_segment(session, segment, request_id, actor="system", semantic_scorer=semantic_scorer)
+    return _rematch_segment_locked(
+        session,
+        segment,
+        request_id,
+        actor="system",
+        semantic_scorer=semantic_scorer,
+    )
+
+
+def patch_segment_timing(
+    session: Session,
+    settings: Settings,
+    segment_id: str,
+    payload: SegmentTimingPatch,
+    request_id: str | None,
+) -> dict:
+    """Update visual pacing without changing transcript timing or rematching assets."""
+    _begin_immediate_if_sqlite(session)
+
+    project_id = session.scalar(select(Segment.project_id).where(Segment.id == segment_id))
+    if project_id is None:
+        raise APIError(404, "SEGMENT_NOT_FOUND", "字幕片段不存在")
+    statement = (
+        select(Segment)
+        .where(Segment.project_id == project_id)
+        .order_by(Segment.position, Segment.id)
+    )
+    if session.get_bind().dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    segments = session.scalars(statement).all()
+    segment = next((item for item in segments if item.id == segment_id), None)
+    if segment is None:
+        raise APIError(404, "SEGMENT_NOT_FOUND", "字幕片段不存在")
+    if segment.version != payload.version:
+        raise APIError(
+            409,
+            "SEGMENT_VERSION_CONFLICT",
+            "片段已被其他操作更新，请刷新后重试",
+            details={"expected": segment.version, "received": payload.version},
+        )
+
+    maximum_duration_ms = settings.preview_max_seconds * 1_000
+    normalized_duration_ms = (
+        normalize_frame_duration_ms(payload.duration_ms)
+        if payload.duration_ms is not None
+        else None
+    )
+    proposed_total = sum(
+        (
+            (
+                normalized_duration_ms
+                if normalized_duration_ms is not None
+                else auto_duration_ms(item)
+            )
+            if item.id == segment.id
+            else effective_duration_ms(item)
+        )
+        for item in segments
+    )
+    if proposed_total > maximum_duration_ms:
+        raise APIError(
+            422,
+            "TIMELINE_TOO_LONG",
+            f"预览总时长不能超过 {settings.preview_max_seconds} 秒",
+            details={
+                "duration_ms": proposed_total,
+                "maximum_duration_ms": maximum_duration_ms,
+            },
+        )
+
+    before = {
+        "render_duration_ms": segment.render_duration_ms,
+        "effective_duration_ms": effective_duration_ms(segment),
+        "version": segment.version,
+    }
+    if segment.render_duration_ms != normalized_duration_ms:
+        segment.render_duration_ms = normalized_duration_ms
+        segment.version += 1
+    session.flush()
+    after = {
+        "render_duration_ms": segment.render_duration_ms,
+        "effective_duration_ms": effective_duration_ms(segment),
+        "version": segment.version,
+        "requested_duration_ms": payload.duration_ms,
+    }
+    add_audit(
+        session,
+        segment.project_id,
+        "segment",
+        segment.id,
+        "segment.timing_updated",
+        before=before,
+        after=after,
+        request_id=request_id,
+    )
+    session.flush()
+    return {
+        "segment": _segment_detail(session, segment),
+        "timeline": public_preview_plan(session, segment.project_id, maximum_duration_ms),
+    }
 
 
 def reorder_segments(
     session: Session, project_id: str, segment_ids: Sequence[str], request_id: str | None
 ) -> list[dict]:
+    _begin_immediate_if_sqlite(session)
     _get_project(session, project_id)
-    segments = session.scalars(
-        select(Segment).where(Segment.project_id == project_id).order_by(Segment.position)
-    ).all()
+    statement = select(Segment).where(Segment.project_id == project_id).order_by(Segment.position)
+    if session.get_bind().dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    segments = session.scalars(statement).all()
     existing_ids = [segment.id for segment in segments]
     if set(existing_ids) != set(segment_ids) or len(existing_ids) != len(segment_ids):
         raise APIError(

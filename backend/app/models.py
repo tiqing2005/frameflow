@@ -119,6 +119,10 @@ class Segment(Base):
     keywords_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     start_ms: Mapped[int | None] = mapped_column(Integer)
     end_ms: Mapped[int | None] = mapped_column(Integer)
+    # ``start_ms``/``end_ms`` describe the source transcript timeline.  A
+    # storyboard override is deliberately stored separately so changing the
+    # visual pacing never corrupts ASR timing information.
+    render_duration_ms: Mapped[int | None] = mapped_column(Integer)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

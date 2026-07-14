@@ -68,7 +68,7 @@ FastAPI API
 | --- | --- |
 | Project | `id, title, status, input_kind, created_at, updated_at` |
 | Source | `project_id, storage_path, mime, size, sha256, original_name, content, transcript_text`；服务端生成安全路径 |
-| Segment | `project_id, position, text, topic, keywords, version`；位置更新在事务中完成 |
+| Segment | `project_id, position, text, topic, keywords, start/end_ms, render_duration_ms, version`；源字幕时间轴与预览展示时长分离，位置和节奏更新在事务中完成 |
 | Asset | `kind, name, storage_key, tags, keywords, search_text, sha256` |
 | Job | `type, status, stage, progress, attempts, lease_*, error_*, idempotency_key` |
 | JobEvent | `job_id, stage, progress, level, message, created_at`；只追加 |
@@ -137,9 +137,9 @@ validating → extracting → transcribing → segmenting
 | 项目 | `GET /dashboard`, `GET /projects`, `GET /projects/{id}` | 项目列表、聚合详情和进度 |
 | 创建 | `POST /projects/text`, `POST /projects/upload` | 事务内创建项目和任务，返回 202 |
 | 任务 | `GET /jobs/{id}`, `POST /jobs/{id}/retry`, `POST /jobs/{id}/cancel` | 进度/事件、重试、取消 |
-| 字幕 | `PATCH /segments/{id}`, `PUT /projects/{id}/segments/order` | 带版本编辑与事务化排序 |
+| 字幕 | `PATCH /segments/{id}`, `PATCH /segments/{id}/timing`, `PUT /projects/{id}/segments/order` | 带版本编辑、40ms 帧对齐的展示时长与事务化排序 |
 | 匹配 | `POST /segments/{id}/rematch`, `PUT /segments/{id}/selection` | 局部重算、幂等保存最终选择 |
-| 预览 | `GET /projects/{id}/timeline`, `GET/POST /projects/{id}/preview` | 获取素材时间线、查询或创建幂等 MP4 组合预览 |
+| 预览 | `GET /projects/{id}/timeline`, `PUT /projects/{id}/timeline/timing`, `GET/POST /projects/{id}/preview` | 获取/批量调整素材时间线，查询或创建幂等 MP4 组合预览 |
 | 素材 | `GET /assets`, `POST /assets`, `PATCH /assets/{id}` | 搜索/筛选、上传、编辑元数据 |
 | 追溯 | `GET /runs`, `GET /audit?project_id=` | AI/匹配运行和人工操作记录 |
 | 演示 | `POST /demo/faults/next` | 仅演示模式下注入一次性故障 |
@@ -156,7 +156,7 @@ validating → extracting → transcribing → segmenting
 }
 ```
 
-`Idempotency-Key` 用于创建类请求；分段编辑使用 `version` 防止丢失更新。具体返回 JSON 形状以运行时 OpenAPI 为准，验收脚本只依赖稳定的状态码和主键，不耦合页面内部结构。
+`Idempotency-Key` 用于创建类请求；分段编辑和单段时长使用 `version` 防止丢失更新，批量时长调整使用 `expected_input_hash` 围栏。SQLite 的时间线写操作在首次读取前取得 `BEGIN IMMEDIATE`，PostgreSQL 按 Segment 行锁顺序串行化正文、排序、选择、重匹配和节奏修改。具体返回 JSON 形状以运行时 OpenAPI 为准，验收脚本只依赖稳定的状态码和主键，不耦合页面内部结构。
 
 ## 9. 故障模型与审计
 

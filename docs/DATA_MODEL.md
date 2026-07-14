@@ -76,10 +76,13 @@ Project 与 Source 是 1:1。本版不将“同一项目替换输入”纳入范
 | `topic` | String(80) | 非空主题 |
 | `keywords_json` | Text | JSON 字符串，默认 `[]` |
 | `start_ms` / `end_ms` | Integer | 可空；仅当真实 ASR 有时间戳时写入 |
-| `version` | Integer | 乐观锁，初始 1，每次编辑递增 |
+| `render_duration_ms` | Integer | 可空；画面展示时长覆盖值，与 ASR 时间轴分离；服务层写入时保证非空值为 1000–30000ms 且按 40ms 帧对齐 |
+| `version` | Integer | 乐观锁，初始 1；正文、主题、关键词或画面时长变化时递增 |
 | `created_at` / `updated_at` | DateTime(TZ) | 非空 |
 
 唯一约束 `UNIQUE(project_id, position)`。重排时不应逐行从旧位置直接改为新位置，否则可触发中间态唯一冲突。实现应在同一事务中先移到临时偏移位置，再写入 0..N-1，并验证 ID 集完全相同。
+
+`start_ms/end_ms` 始终描述源字幕/ASR 时间轴；预览节奏使用 `render_duration_ms`，为空时才回退到自动估算。单段调整、批量分配、正文编辑、重排、素材选择和重新匹配共享时间线写入边界，避免并发更新制造丢失写入或错误预览指纹。
 
 ### 3.4 `assets`
 

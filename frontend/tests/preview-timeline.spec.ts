@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 import { fulfillDisabledAuth } from './mock-auth'
+import type { ProjectTimeline, Segment } from '../src/types'
 
 const PROJECT_ID = 'project-preview'
 const JOB_ID = 'job-preview'
@@ -18,19 +19,25 @@ const asset = (id: string, name: string, kind: 'image' | 'video' = 'image') => (
   keywords: [name],
 })
 
-const timeline = {
+const timeline: ProjectTimeline = {
   project_id: PROJECT_ID,
-  input_hash: 'timeline-hash-v1',
+  input_hash: 'a'.repeat(64),
   segment_count: 3,
   duration_ms: 12_000,
+  limits: {
+    segment_min_duration_ms: 1_000,
+    segment_max_duration_ms: 30_000,
+    timeline_max_duration_ms: 180_000,
+    frame_duration_ms: 40,
+  },
   items: [
-    { segment_id: 'segment-1', position: 0, text: '第一段字幕', topic: '开场', start_ms: 0, end_ms: 3000, duration_ms: 3000, asset: asset('city', '城市开场') },
-    { segment_id: 'segment-2', position: 1, text: '第二段字幕', topic: '协作', start_ms: 3000, end_ms: 8000, duration_ms: 5000, asset: asset('team', '团队协作', 'video') },
-    { segment_id: 'segment-3', position: 2, text: '第三段字幕', topic: '收束', start_ms: 8000, end_ms: 12_000, duration_ms: 4000, asset: asset('result', '成果收束') },
+    { segment_id: 'segment-1', position: 0, text: '第一段字幕', topic: '开场', start_ms: 0, end_ms: 3000, duration_ms: 3000, render_duration_ms: null, auto_duration_ms: 3000, effective_duration_ms: 3000, duration_source: 'auto', asset: asset('city', '城市开场') },
+    { segment_id: 'segment-2', position: 1, text: '第二段字幕', topic: '协作', start_ms: 3000, end_ms: 8000, duration_ms: 5000, render_duration_ms: null, auto_duration_ms: 5000, effective_duration_ms: 5000, duration_source: 'auto', asset: asset('team', '团队协作', 'video') },
+    { segment_id: 'segment-3', position: 2, text: '第三段字幕', topic: '收束', start_ms: 8000, end_ms: 12_000, duration_ms: 4000, render_duration_ms: null, auto_duration_ms: 4000, effective_duration_ms: 4000, duration_source: 'auto', asset: asset('result', '成果收束') },
   ],
 }
 
-const segments = timeline.items.map((item) => ({
+const segments: Segment[] = timeline.items.map((item) => ({
   id: item.segment_id,
   project_id: PROJECT_ID,
   position: item.position,
@@ -39,10 +46,40 @@ const segments = timeline.items.map((item) => ({
   keywords: [item.topic],
   start_ms: item.start_ms,
   end_ms: item.end_ms,
+  render_duration_ms: null,
   version: 1,
   recommendations: [],
   selection: { segment_id: item.segment_id, asset_id: item.asset.id, source: 'manual', asset: item.asset },
 }))
+
+interface PreviewMockState {
+  finished: boolean
+  jobPolls: number
+  postBodies: unknown[]
+  stale?: boolean
+  rematched?: boolean
+  previewReads?: number
+  previewUnavailable?: boolean
+  timelineOverride?: ProjectTimeline
+  segmentsOverride?: Segment[]
+  segmentTimingBodies?: unknown[]
+  timelineTimingBodies?: unknown[]
+  segmentSaveBodies?: unknown[]
+  timingRevision?: number
+  timingDelayMs?: number
+  segmentSaveDelayMs?: number
+}
+
+function rebuildTimeline(base: ProjectTimeline, items: ProjectTimeline['items'], revision: number): ProjectTimeline {
+  let cursor = 0
+  const positioned = items.map((item) => {
+    const durationMs = item.effective_duration_ms ?? item.duration_ms
+    const next = { ...item, start_ms: cursor, end_ms: cursor + durationMs, duration_ms: durationMs, effective_duration_ms: durationMs }
+    cursor += durationMs
+    return next
+  })
+  return { ...base, input_hash: String.fromCharCode(98 + (revision % 20)).repeat(64), duration_ms: cursor, items: positioned }
+}
 
 const projectDetail = {
   project: {
@@ -87,13 +124,13 @@ function preview(status: 'queued' | 'running' | 'succeeded', progress: number) {
   }
 }
 
-async function mockApi(page: Page, state: { finished: boolean; jobPolls: number; postBodies: unknown[]; stale?: boolean; rematched?: boolean; previewReads?: number; previewUnavailable?: boolean }) {
+async function mockApi(page: Page, state: PreviewMockState) {
   await page.route('**/api/v1/**', async (route: Route) => {
     if (await fulfillDisabledAuth(route)) return
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}`) {
-      await route.fulfill({ json: projectDetail })
+      await route.fulfill({ json: { ...projectDetail, segments: state.segmentsOverride || segments } })
       return
     }
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}/preview`) {
@@ -102,13 +139,90 @@ async function mockApi(page: Page, state: { finished: boolean; jobPolls: number;
         await route.fulfill({ status: 404, json: { code: 'NOT_FOUND', message: '请求的资源不存在', retryable: false } })
         return
       }
-      const currentTimeline = state.rematched ? { ...timeline, input_hash: 'timeline-hash-v2' } : timeline
+      const currentTimeline = state.timelineOverride || (state.rematched ? { ...timeline, input_hash: 'b'.repeat(64) } : timeline)
       const currentPreview = state.finished ? { ...preview('succeeded', 100), input_hash: state.stale ? 'old-timeline-hash' : timeline.input_hash } : null
       await route.fulfill({ json: { preview: currentPreview, timeline: currentTimeline } })
       return
     }
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}/timeline`) {
-      await route.fulfill({ json: timeline })
+      await route.fulfill({ json: state.timelineOverride || timeline })
+      return
+    }
+    if (request.method() === 'PATCH' && path === '/api/v1/segments/segment-1') {
+      const body = request.postDataJSON() as { text: string; topic: string; keywords: string[]; version: number }
+      state.segmentSaveBodies?.push(body)
+      if (state.segmentSaveDelayMs) await new Promise((resolve) => setTimeout(resolve, state.segmentSaveDelayMs))
+      const currentSegments = state.segmentsOverride || segments
+      let updatedSegment = currentSegments[0]
+      state.segmentsOverride = currentSegments.map((segment) => {
+        if (segment.id !== 'segment-1') return segment
+        updatedSegment = { ...segment, text: body.text, topic: body.topic, keywords: body.keywords, version: segment.version + 1 }
+        return updatedSegment
+      })
+      const currentTimeline = state.timelineOverride || timeline
+      state.timingRevision = (state.timingRevision || 0) + 1
+      state.timelineOverride = rebuildTimeline(currentTimeline, currentTimeline.items.map((item) => item.segment_id === 'segment-1' ? { ...item, text: body.text, topic: body.topic } : item), state.timingRevision)
+      await route.fulfill({ json: updatedSegment })
+      return
+    }
+    if (request.method() === 'PATCH' && path === '/api/v1/segments/segment-1/timing') {
+      const body = request.postDataJSON() as { duration_ms: number | null; version: number }
+      state.segmentTimingBodies?.push(body)
+      if (state.timingDelayMs) await new Promise((resolve) => setTimeout(resolve, state.timingDelayMs))
+      const currentTimeline = state.timelineOverride || timeline
+      const autoDurationMs = currentTimeline.items[0].auto_duration_ms || 3000
+      const normalizedDurationMs = body.duration_ms == null ? null : Math.round(body.duration_ms / 40) * 40
+      const effectiveDurationMs = normalizedDurationMs ?? autoDurationMs
+      const items = currentTimeline.items.map((item) => item.segment_id === 'segment-1' ? {
+        ...item,
+        render_duration_ms: normalizedDurationMs,
+        duration_source: normalizedDurationMs == null ? 'auto' as const : 'manual' as const,
+        duration_ms: effectiveDurationMs,
+        effective_duration_ms: effectiveDurationMs,
+      } : item)
+      state.timingRevision = (state.timingRevision || 0) + 1
+      state.timelineOverride = rebuildTimeline(currentTimeline, items, state.timingRevision)
+      const currentSegments = state.segmentsOverride || segments
+      let updatedSegment = currentSegments[0]
+      state.segmentsOverride = currentSegments.map((segment) => {
+        if (segment.id !== 'segment-1') return segment
+        updatedSegment = { ...segment, render_duration_ms: normalizedDurationMs, version: segment.version + 1 }
+        return updatedSegment
+      })
+      await route.fulfill({ json: { segment: updatedSegment, timeline: state.timelineOverride } })
+      return
+    }
+    if (request.method() === 'PUT' && path === `/api/v1/projects/${PROJECT_ID}/timeline/timing`) {
+      const body = request.postDataJSON() as { action: 'fit' | 'restore_auto'; target_duration_ms?: number; strategy: 'text' | 'current' | 'equal'; expected_input_hash: string }
+      state.timelineTimingBodies?.push(body)
+      const currentTimeline = state.timelineOverride || timeline
+      const requestedTargetDuration = body.target_duration_ms || currentTimeline.duration_ms
+      const targetDuration = body.action === 'fit' ? Math.round(requestedTargetDuration / 40) * 40 : requestedTargetDuration
+      const each = Math.floor(targetDuration / currentTimeline.items.length)
+      let assigned = 0
+      const items = currentTimeline.items.map((item, index) => {
+        const autoDurationMs = item.auto_duration_ms || timeline.items[index].duration_ms
+        const durationMs = body.action === 'restore_auto'
+          ? autoDurationMs
+          : index === currentTimeline.items.length - 1 ? targetDuration - assigned : each
+        assigned += durationMs
+        return {
+          ...item,
+          render_duration_ms: body.action === 'restore_auto' ? null : durationMs,
+          duration_source: body.action === 'restore_auto' ? 'auto' as const : 'manual' as const,
+          duration_ms: durationMs,
+          effective_duration_ms: durationMs,
+        }
+      })
+      state.timingRevision = (state.timingRevision || 0) + 1
+      state.timelineOverride = rebuildTimeline(currentTimeline, items, state.timingRevision)
+      const currentSegments = state.segmentsOverride || segments
+      state.segmentsOverride = currentSegments.map((segment, index) => ({
+        ...segment,
+        render_duration_ms: body.action === 'restore_auto' ? null : items[index].duration_ms,
+        version: segment.version + 1,
+      }))
+      await route.fulfill({ json: state.timelineOverride })
       return
     }
     if (request.method() === 'POST' && path === `/api/v1/projects/${PROJECT_ID}/preview`) {
@@ -209,4 +323,165 @@ test('预览接口暂不可用时仍展示时间线，并给出可操作的后�
   await expect(timelineSection.locator('.timeline-clip')).toHaveCount(3)
   await expect(timelineSection.getByText('组合预览接口暂不可用', { exact: false })).toBeVisible()
   await expect(timelineSection.getByRole('button', { name: '生成预览视频' })).toBeEnabled()
+})
+
+test('可设置目标总时长和单片段时长，并恢复自动节奏且不立即重渲染', async ({ page }) => {
+  const state: PreviewMockState = {
+    finished: true,
+    jobPolls: 0,
+    postBodies: [],
+    segmentTimingBodies: [],
+    timelineTimingBodies: [],
+  }
+  await page.route(`**${OUTPUT_URL}`, (route) => route.fulfill({ path: SAMPLE_VIDEO, contentType: 'video/mp4' }))
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  await expect(timelineSection.getByText('片段 01 展示时长')).toBeVisible()
+  await expect(timelineSection.getByText('自动', { exact: true })).toBeVisible()
+
+  await timelineSection.getByRole('button', { name: '调整节奏' }).click()
+  await expect(timelineSection.getByRole('button', { name: '15 秒' })).toBeVisible()
+  await expect(timelineSection.getByRole('button', { name: '30 秒' })).toBeVisible()
+  await expect(timelineSection.getByRole('button', { name: '60 秒' })).toBeVisible()
+  await timelineSection.getByRole('button', { name: '30 秒' }).click()
+  await timelineSection.getByRole('button', { name: '自定义' }).click()
+  await timelineSection.locator('.timeline-custom-duration input').fill('30.11')
+  await timelineSection.getByLabel('分配方式').selectOption('equal')
+  await timelineSection.getByRole('button', { name: '应用总时长' }).click()
+
+  await expect.poll(() => state.timelineTimingBodies).toEqual([{
+    action: 'fit',
+    target_duration_ms: 30_110,
+    strategy: 'equal',
+    expected_input_hash: timeline.input_hash,
+  }])
+  await expect(timelineSection.getByText('3 个片段 · 30.12s')).toBeVisible()
+  await expect(timelineSection.locator('.timeline-custom-duration input')).toHaveValue('30.12')
+  await expect(page.getByText('已将总时长适配为 30.12s')).toBeVisible()
+  await expect(timelineSection.getByText('原预览已过期', { exact: false })).toContainText('当前总时长 30.12s')
+  await expect(timelineSection.getByLabel('FrameFlow 组合预览视频')).toHaveCount(0)
+  expect(state.postBodies).toEqual([])
+
+  const segmentDuration = timelineSection.getByLabel('片段展示时长（秒）')
+  await segmentDuration.fill('7.51')
+  await timelineSection.getByRole('button', { name: '应用', exact: true }).click()
+  await expect.poll(() => state.segmentTimingBodies?.[0]).toEqual({ duration_ms: 7510, version: 2 })
+  await expect(segmentDuration).toHaveValue('7.52')
+  await expect(timelineSection.locator('.timeline-clip').first().getByText('7.52s')).toBeVisible()
+  await expect(page.getByText('片段时长已设为 7.52s')).toBeVisible()
+  await expect(timelineSection.getByText('手动', { exact: true })).toBeVisible()
+
+  await segmentDuration.fill('30')
+  await expect(timelineSection.getByRole('button', { name: '增加约 0.5 秒' })).toBeDisabled()
+  await segmentDuration.fill('9.52')
+  await timelineSection.getByRole('button', { name: '增加约 0.5 秒' }).click()
+  await expect.poll(() => state.segmentTimingBodies?.[1]).toEqual({ duration_ms: 10_040, version: 3 })
+  await expect(segmentDuration).toHaveValue('10.04')
+
+  await timelineSection.getByRole('button', { name: '恢复自动', exact: true }).click()
+  await expect.poll(() => state.segmentTimingBodies?.[2]).toEqual({ duration_ms: null, version: 4 })
+  await expect(timelineSection.getByText('自动', { exact: true })).toBeVisible()
+
+  await timelineSection.getByRole('button', { name: '恢复全部自动' }).click()
+  await expect.poll(() => state.timelineTimingBodies?.at(-1)).toMatchObject({ action: 'restore_auto', strategy: 'equal' })
+  expect(state.postBodies).toEqual([])
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const hasPageOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
+  expect(hasPageOverflow).toBe(false)
+})
+
+test('时长请求等待期间冻结冲突编辑，快速双击只提交一次', async ({ page }) => {
+  const state: PreviewMockState = {
+    finished: false,
+    jobPolls: 0,
+    postBodies: [],
+    segmentTimingBodies: [],
+    timelineTimingBodies: [],
+    timingDelayMs: 300,
+  }
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  const increase = timelineSection.getByRole('button', { name: '增加约 0.5 秒' })
+  await increase.evaluate((element) => {
+    const button = element as HTMLButtonElement
+    button.click()
+    button.click()
+  })
+
+  await expect.poll(() => state.segmentTimingBodies?.length).toBe(1)
+  await expect(timelineSection).toHaveAttribute('aria-busy', 'true')
+  await expect(page.getByLabel('字幕文本')).toBeDisabled()
+  await expect(page.getByTitle('根据当前文本重新匹配')).toBeDisabled()
+  await expect(page.locator('.segment-open').first()).toBeDisabled()
+
+  await expect(timelineSection.getByText('手动', { exact: true })).toBeVisible()
+  await expect(timelineSection).toHaveAttribute('aria-busy', 'false')
+  expect(state.segmentTimingBodies).toEqual([{ duration_ms: 3520, version: 1 }])
+  await expect(page.getByLabel('字幕文本')).toBeEnabled()
+})
+
+test('有未保存字幕时先完成保存并用最新指纹调整总时长', async ({ page }) => {
+  const state: PreviewMockState = {
+    finished: false,
+    jobPolls: 0,
+    postBodies: [],
+    segmentSaveBodies: [],
+    segmentTimingBodies: [],
+    timelineTimingBodies: [],
+  }
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  await timelineSection.getByRole('button', { name: '调整节奏' }).click()
+  await page.getByLabel('字幕文本').fill('保存后的第一段字幕')
+  await timelineSection.getByRole('button', { name: '应用总时长' }).click()
+
+  await expect.poll(() => state.segmentSaveBodies?.length).toBe(1)
+  await expect.poll(() => state.timelineTimingBodies?.length).toBe(1)
+  const timingBody = state.timelineTimingBodies?.[0] as { expected_input_hash: string }
+  expect(timingBody.expected_input_hash).not.toBe(timeline.input_hash)
+  expect(timingBody.expected_input_hash).toHaveLength(64)
+  await expect(page.getByLabel('字幕文本')).toHaveValue('保存后的第一段字幕')
+  await expect(page.getByLabel('字幕文本')).toBeEnabled()
+})
+
+test('等待字幕保存时预览创建与节奏调整互斥，快速点击只创建一个预览', async ({ page }) => {
+  const state: PreviewMockState = {
+    finished: false,
+    jobPolls: 0,
+    postBodies: [],
+    segmentSaveBodies: [],
+    segmentTimingBodies: [],
+    timelineTimingBodies: [],
+    segmentSaveDelayMs: 300,
+  }
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  await timelineSection.getByRole('button', { name: '调整节奏' }).click()
+  await page.getByLabel('字幕文本').fill('生成预览前保存这段字幕')
+  const generate = await timelineSection.getByRole('button', { name: '生成预览视频' }).elementHandle()
+  const fit = await timelineSection.getByRole('button', { name: '应用总时长' }).elementHandle()
+  expect(generate).not.toBeNull()
+  expect(fit).not.toBeNull()
+  if (!generate || !fit) throw new Error('预览与节奏按钮未渲染')
+  await page.evaluate(({ generateButton, fitButton }) => {
+    const generateElement = generateButton as HTMLButtonElement
+    const fitElement = fitButton as HTMLButtonElement
+    generateElement.click()
+    generateElement.click()
+    fitElement.click()
+  }, { generateButton: generate, fitButton: fit })
+
+  await expect.poll(() => state.segmentSaveBodies?.length).toBe(1)
+  await expect.poll(() => state.postBodies.length).toBe(1)
+  expect(state.timelineTimingBodies).toEqual([])
+  await expect(timelineSection.getByRole('status')).toContainText('正在组合画面与字幕')
 })

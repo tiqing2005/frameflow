@@ -40,12 +40,19 @@ from .projects import (
     list_projects,
     project_detail,
 )
-from .previews import build_preview_plan, create_preview_job, get_project_preview, public_preview_plan
+from .previews import (
+    build_preview_plan,
+    create_preview_job,
+    get_project_preview,
+    public_preview_plan,
+    update_timeline_timing,
+)
 from .runs import list_runs
 from .segments import (
     _asset_rank_payloads,
     _segment_detail,
     patch_segment,
+    patch_segment_timing,
     rematch_segment,
     reorder_segments,
 )
@@ -74,8 +81,10 @@ __all__ = [
     "list_runs",
     "patch_asset",
     "patch_segment",
+    "patch_segment_timing",
     "project_detail",
     "public_preview_plan",
+    "update_timeline_timing",
     "put_selection",
     "rematch_segment",
     "reorder_segments",
