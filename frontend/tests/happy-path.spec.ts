@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { fulfillDisabledAuth } from './mock-auth'
 
 /**
  * Full happy-path contract test covering the interview acceptance flow
@@ -97,6 +98,7 @@ const STAGES = [
 
 async function mockApi(page: Page, selectionState: { assetId: string | null; requests: string[] }) {
   await page.route('**/api/v1/**', async (route: Route) => {
+    if (await fulfillDisabledAuth(route)) return
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname

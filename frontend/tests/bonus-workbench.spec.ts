@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { fulfillDisabledAuth } from './mock-auth'
 
 const PROJECT_ID = 'project-bonus'
 
@@ -90,6 +91,7 @@ function timeline(state: MockState) {
 
 async function mockApi(page: Page, state: MockState) {
   await page.route('**/api/v1/**', async (route: Route) => {
+    if (await fulfillDisabledAuth(route)) return
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname

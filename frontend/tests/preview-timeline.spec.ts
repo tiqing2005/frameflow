@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
+import { fulfillDisabledAuth } from './mock-auth'
 
 const PROJECT_ID = 'project-preview'
 const JOB_ID = 'job-preview'
@@ -88,6 +89,7 @@ function preview(status: 'queued' | 'running' | 'succeeded', progress: number) {
 
 async function mockApi(page: Page, state: { finished: boolean; jobPolls: number; postBodies: unknown[]; stale?: boolean; rematched?: boolean; previewReads?: number; previewUnavailable?: boolean }) {
   await page.route('**/api/v1/**', async (route: Route) => {
+    if (await fulfillDisabledAuth(route)) return
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}`) {

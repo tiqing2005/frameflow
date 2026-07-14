@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { installDisabledAuth } from './mock-auth'
 
 interface RunFixture {
   id: string
@@ -12,6 +13,7 @@ interface RunFixture {
 }
 
 async function mockRuns(page: Page, runs: RunFixture[]) {
+  await installDisabledAuth(page)
   await page.route('**/api/v1/runs', async (route) => {
     await route.fulfill({ json: { items: runs, total: runs.length } })
   })

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { fulfillDisabledAuth } from './mock-auth'
 
 const segments = [
   {
@@ -54,6 +55,7 @@ type PatchHandler = (route: Route, body: Record<string, unknown>, segmentId: str
 async function mockApi(page: Page, patchHandler: PatchHandler) {
   let rematchCalls = 0
   await page.route('**/api/v1/**', async (route) => {
+    if (await fulfillDisabledAuth(route)) return
     const request = route.request()
     const url = new URL(request.url())
     if (request.method() === 'GET' && url.pathname === '/api/v1/projects/project-1') {

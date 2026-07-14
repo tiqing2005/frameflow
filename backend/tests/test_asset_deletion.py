@@ -3,6 +3,11 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from app.auth import hash_password
+from app.config import Settings
+from app.main import create_app
 from app.models import Asset
 
 
@@ -82,3 +87,52 @@ def test_asset_delete_returns_not_found(runtime):
     response = client.delete("/api/v1/assets/missing-asset")
     assert response.status_code == 404
     assert response.json()["code"] == "ASSET_NOT_FOUND"
+
+
+def test_authenticated_asset_delete_requires_csrf_and_uses_delete_route(tmp_path: Path):
+    """Exercise login + upload + delete against the real ASGI application.
+
+    This guards the exact browser contract that previously surfaced as a 405:
+    the authenticated route must accept DELETE, while still rejecting a write
+    that omits the session's CSRF token.
+    """
+    data_dir = tmp_path / "authenticated-delete"
+    settings = Settings(
+        data_dir=data_dir,
+        database_url=f"sqlite:///{(data_dir / 'frameflow.db').as_posix()}",
+        auth_enabled=True,
+        auth_username="reviewer",
+        auth_password_hash=hash_password("delete-test-password"),
+        frontend_dir=tmp_path / "missing-frontend",
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "reviewer", "password": "delete-test-password"},
+        )
+        assert login.status_code == 200, login.text
+        csrf_token = login.json()["csrf_token"]
+        csrf_headers = {"X-CSRF-Token": csrf_token}
+
+        uploaded = client.post(
+            "/api/v1/assets",
+            data={"name": "登录后删除素材", "tags": "测试", "keywords": "登录,删除"},
+            files={"file": ("authenticated.png", PNG, "image/png")},
+            headers=csrf_headers,
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        asset_id = uploaded.json()["id"]
+
+        missing_csrf = client.delete(f"/api/v1/assets/{asset_id}")
+        assert missing_csrf.status_code == 403
+        assert missing_csrf.json()["code"] == "CSRF_INVALID"
+
+        deleted = client.delete(f"/api/v1/assets/{asset_id}", headers=csrf_headers)
+        assert deleted.status_code == 204, deleted.text
+        remaining_ids = {
+            item["id"] for item in client.get("/api/v1/assets").json()["items"]
+        }
+        assert asset_id not in remaining_ids
+
+    app.state.database.engine.dispose()

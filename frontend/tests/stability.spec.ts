@@ -1,5 +1,6 @@
 import { expect, test, type Route } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
+import { fulfillDisabledAuth } from './mock-auth'
 
 const SAMPLE_VIDEO = fileURLToPath(new URL('../../backend/seed_media/video-smart-city.mp4', import.meta.url))
 const SAMPLE_POSTER = fileURLToPath(new URL('../../backend/seed_media/video-smart-city-poster.jpg', import.meta.url))
@@ -63,6 +64,7 @@ async function mockDashboard(route: Route) {
 
 test('快速切换项目时，旧项目的慢响应不会覆盖当前工作台', async ({ page }) => {
   await page.route('**/api/v1/**', async (route) => {
+    if (await fulfillDisabledAuth(route)) return
     if (await mockDashboard(route)) return
     const path = new URL(route.request().url()).pathname
     if (path === '/api/v1/projects/project-a') {
@@ -94,6 +96,7 @@ test('素材搜索只接纳最新结果，视频使用文件地址播放并将�
   await page.route('**/media/fast-video.mp4', (route) => route.fulfill({ path: SAMPLE_VIDEO, contentType: 'video/mp4' }))
   await page.route('**/media/fast-video-poster.jpg', (route) => route.fulfill({ path: SAMPLE_POSTER, contentType: 'image/jpeg' }))
   await page.route('**/api/v1/**', async (route) => {
+    if (await fulfillDisabledAuth(route)) return
     if (await mockDashboard(route)) return
     const request = route.request()
     const url = new URL(request.url())
@@ -132,6 +135,7 @@ test('素材搜索只接纳最新结果，视频使用文件地址播放并将�
 test('处理中任务的已用时会逐秒更新，而不是只在轮询响应时变化', async ({ page }) => {
   const startedAt = new Date(Date.now() - 3000).toISOString()
   await page.route('**/api/v1/**', async (route) => {
+    if (await fulfillDisabledAuth(route)) return
     const path = new URL(route.request().url()).pathname
     if (path === '/api/v1/projects/project-running') {
       await route.fulfill({
@@ -175,6 +179,7 @@ test('处理中任务的已用时会逐秒更新，而不是只在轮询响应�
 test('处理页轮询失败后使用退避，不会按固定高频持续请求', async ({ page }) => {
   const requestTimes: number[] = []
   await page.route('**/api/v1/**', async (route) => {
+    if (await fulfillDisabledAuth(route)) return
     const path = new URL(route.request().url()).pathname
     if (path === '/api/v1/projects/project-offline') {
       requestTimes.push(Date.now())
