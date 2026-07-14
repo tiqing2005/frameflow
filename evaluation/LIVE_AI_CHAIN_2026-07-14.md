@@ -15,21 +15,26 @@
 ## 真实样本
 
 - 输入：约 71 秒中文 M4A 音频
-- 项目：`d4e8bc70-091e-4705-9d01-bd19065d51e6`
-- 任务：`191d2a71-ceb5-4457-aa00-1ffe705ed7b8`
+- 项目：`27cff808-1795-41ba-a251-59d9c4879a48`
+- 任务：`2b4fb534-4120-48b8-8804-84148b92c7bd`
 - 执行时间：2026-07-14
 
 ## 结果
 
 | 阶段 | Provider | Model | 耗时 | 状态 |
 | --- | --- | --- | ---: | --- |
-| 语音转写 | `faster-whisper` | `small` | 20,492 ms | succeeded，未降级 |
-| 字幕语义增强 | `gemini` | `gemini-3.1-flash-lite-preview` | 3,403 ms | succeeded，未降级 |
-| 素材匹配 | `hybrid-fallback` | `char-ngram-tfidf` | 23 ms | succeeded |
+| 语音转写 | `faster-whisper` | `small` | 20,475 ms | succeeded，未降级 |
+| 字幕语义增强 | `gemini` | `gemini-3.1-flash-lite-preview` | 3,112 ms | succeeded，未降级 |
+| 素材匹配 | `hybrid-fallback` | `char-ngram-tfidf` | 30 ms | succeeded |
 
 - 从上传创建任务到任务完成：约 26 秒。
 - 任务状态真实经过 `queued → running/transcribing → segmenting → keywording → succeeded`。
 - 该结果证明音频转写和 Gemini 语义增强均被真实调用，不是文件名推断、预置字幕或规则伪装。
+- 同一最终镜像在容器刚重建后的首轮样本约 34 秒，其中 ASR 25,007 ms、Gemini 5,201 ms；热机与冷启动差异已保留，不把最佳值承诺为固定耗时。
+
+## 素材画面识别
+
+同一最终镜像还通过真实上传接口验证了异步视觉打标。Gemini 在 4,834 ms 内从电子元件图片生成“电子元件、电路板、科技、硬件、微芯片”等标签，运行记录为 `source=vision`、`degraded=false`；测试素材随后通过删除接口清理。视觉密钥仍只存在于服务器私有环境。
 
 ## 结论与边界
 

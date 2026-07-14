@@ -108,7 +108,7 @@
 
 ### Q23：你到底有没有接真实 LLM？
 
-**答：**接了。公网字幕语义增强通过 OpenAI-compatible 网关调用 Gemini 3.1 Flash Lite Preview，当前一次生产样本约 3.4 秒，运行记录保存真实 provider/model/latency/degraded。模型结果仍要通过 Schema 和原文完整性校验；失败则回退规则。DeepSeek 是可替换 Provider，素材匹配本身仍是可解释的 TF-IDF 混合检索。
+**答：**接了。公网字幕语义增强通过 OpenAI-compatible 网关调用 Gemini 3.1 Flash Lite Preview，当前一次生产样本约 3.1 秒，运行记录保存真实 provider/model/latency/degraded。模型结果仍要通过 Schema 和原文完整性校验；失败则回退规则。DeepSeek 是可替换 Provider，素材匹配本身仍是可解释的 TF-IDF 混合检索。
 
 ### Q24：那为什么产品名里有 AI？
 

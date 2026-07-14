@@ -47,7 +47,7 @@ FastAPI API
 
 前端通过轮询任务详情获取持久化的阶段、进度和事件。轮询比 SSE/WebSocket 简单，对当前秒级 Demo 任务足够稳定，也更容易经过公网代理。
 
-公网 Provider 拓扑有意拆成两段：音视频先在服务器本地用 `faster-whisper small/int8` 转写，字幕文本再以 `gemini` Provider 交给 `gemini-3.1-flash-lite-preview` 做语义增强；网关传输仍遵循 OpenAI-compatible `/chat/completions`。这样避免国内云 ASR 从新加坡主机反向拉取媒体，同时只把转写文本发送给 LLM。当前一次 71 秒热机样本中，ASR 阶段约 20.5 秒、语义增强约 3.4 秒、完整流程约 26 秒；这是单次观测而非 SLA。DashScope Paraformer-v2 适配器仍保留，并用 8 kbps MP3、75 秒切片和 HMAC 临时 URL 降低回源风险；DeepSeek 可替换 Gemini，业务流水线不绑定具体模型。
+公网 Provider 拓扑有意拆成两段：音视频先在服务器本地用 `faster-whisper small/int8` 转写，字幕文本再以 `gemini` Provider 交给 `gemini-3.1-flash-lite-preview` 做语义增强；网关传输仍遵循 OpenAI-compatible `/chat/completions`。这样避免国内云 ASR 从新加坡主机反向拉取媒体，同时只把转写文本发送给 LLM。当前一次 71 秒热机样本中，ASR 阶段约 20.5 秒、语义增强约 3.1 秒、完整流程约 26 秒；这是单次观测而非 SLA。DashScope Paraformer-v2 适配器仍保留，并用 8 kbps MP3、75 秒切片和 HMAC 临时 URL 降低回源风险；DeepSeek 可替换 Gemini，业务流水线不绑定具体模型。
 
 ## 4. 主要模块
 

@@ -61,7 +61,7 @@ Embedder.embed(texts) -> versioned vectors
 
 DashScope Paraformer-v2 保留为可选云端方案。为降低新加坡服务器到国内服务的跨境回源风险，适配器会先转为 8 kbps MP3，并按 75 秒切片，再通过 HMAC 临时 URL 让 Provider 拉取；网络路径仍由双方链路决定，因此它不是公网默认方案。未安装本地模型且未配置其他可用 Provider 时，任务会以 `ASR_NOT_CONFIGURED` 失败，不使用文件名、预置文本或假延时伪装转写。
 
-语义增强的同一轮生产样本约耗时 3.4 秒，完整异步流程约 26 秒；实际记录应以运行页面中的 provider、model、latency 和 degraded 标志为准。Gemini 是当前配置而非业务硬依赖；DeepSeek 可按同一 Provider 边界替换。
+语义增强的同一轮生产样本约耗时 3.1 秒，完整异步流程约 26 秒；实际记录应以运行页面中的 provider、model、latency 和 degraded 标志为准。Gemini 是当前配置而非业务硬依赖；DeepSeek 可按同一 Provider 边界替换。
 
 ## 6. 演示故障注入的性质
 

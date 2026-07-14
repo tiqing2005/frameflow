@@ -314,7 +314,7 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 | PERF-02 | 单 Worker 下连续创建 5 个文本任务 | API 均快速返回 202，任务有界排队并依次完成，无重复领取、任务丢失或结果串项 |
 | PERF-03 | 100 次轮询 GET Job | 无 SQLite locked 错误，进度单调、终态稳定 |
 | PERF-04 | 100 MB 上限附近文件 | 不一次性读入前端 JS 内存；超限被及时拒绝 |
-| PERF-05 | 公网真实音频与语义增强 | 记录各阶段耗时而非只记录总时长；当前一次 71 秒热机样本为 ASR 约 20.5 秒、Gemini 增强约 3.4 秒、完整流程约 26 秒，不作为 SLA |
+| PERF-05 | 公网真实音频与语义增强 | 记录各阶段耗时而非只记录总时长；当前一次 71 秒热机样本为 ASR 约 20.5 秒、Gemini 增强约 3.1 秒、完整流程约 26 秒，不作为 SLA |
 
 若环境冷启需下载 ASR 模型，该时间必须单独记录，不与本地规则 PERF-01 混在一起。
 
@@ -356,7 +356,7 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 - 前端 `npm run build`：PASS。
 - 前端 `npm run test:browser`：PASS，Chromium `28 passed`，覆盖登录/首次初始化、素材删除、完整闭环、拖动排序、快速替换、失败回滚、保存竞态、时间线过期、预览异常和移动端布局。
 - 启动器契约：PASS，3 个场景，覆盖旧服务能力探测、认证路由和启动恢复边界。
-- 真实 LLM 生产验证：PASS，通过未提交的服务端配置调用 OpenAI-compatible Gemini 3.1 Flash Lite Preview，运行记录为 `degraded=false`；当前一次样本约 3.4 秒，文档和输出均不含密钥或真实网关。
+- 真实 LLM 生产验证：PASS，通过未提交的服务端配置调用 OpenAI-compatible Gemini 3.1 Flash Lite Preview，运行记录为 `degraded=false`；当前一次热机样本约 3.1 秒，文档和输出均不含密钥或真实网关。
 - 真实 ASR 生产验证：PASS，公网单 Worker使用 `faster-whisper small/int8`，容器分配 3.5 CPU / 4 GB；当前一次 71 秒热机样本的 ASR 阶段约 20.5 秒、完整流程约 26 秒，运行记录保存真实 Provider/模型。
 - 本地向量评测：混合排序(向量) Hit@3 `0.9412`、MRR `0.7966`、nDCG@3 `0.8288`。
 - ffmpeg 冒烟：图片 + 视频 2 片段、3 秒、1280×720，输出 577,972 bytes；本机编码器 `libopenh264`。本机 ffmpeg 缺少字幕能力，因此该次 `subtitles_burned=false`；Docker 镜像安装 Debian ffmpeg 与 Noto CJK 字体，仍需 Docker daemon 可用后复验。

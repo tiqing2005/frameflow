@@ -184,7 +184,7 @@ LLM_TIMEOUT=20
 docker compose --env-file deploy/.env up -d --build --force-recreate
 ```
 
-`gemini` 是运行记录中的供应商标识，传输仍调用 `${LLM_BASE_URL}/chat/completions`。模型输出必须通过严格 JSON Schema 校验，并完整保留原字幕；无密钥、超时、HTTP 错误、非法 JSON 或字幕缺失都会自动回退到确定性规则，任务仍可完成，运行记录会标为降级。当前一次生产样本的语义增强阶段约 3.4 秒，该数字不是 SLA。模型 ID、兼容程度和可用性以实际网关为准；DeepSeek 可通过 `LLM_PROVIDER=deepseek` 与对应 API 基址替换，不需要修改业务代码。
+`gemini` 是运行记录中的供应商标识，传输仍调用 `${LLM_BASE_URL}/chat/completions`。模型输出必须通过严格 JSON Schema 校验，并完整保留原字幕；无密钥、超时、HTTP 错误、非法 JSON 或字幕缺失都会自动回退到确定性规则，任务仍可完成，运行记录会标为降级。当前一次生产样本的语义增强阶段约 3.1 秒，该数字不是 SLA。模型 ID、兼容程度和可用性以实际网关为准；DeepSeek 可通过 `LLM_PROVIDER=deepseek` 与对应 API 基址替换，不需要修改业务代码。
 
 ### 素材画面识别（可选）
 
@@ -279,7 +279,7 @@ FRAMEFLOW_CPUS=3.5
 FRAMEFLOW_MEMORY_LIMIT=4g
 ```
 
-然后运行升级脚本。模型首次使用时会下载到 `HF_HOME=/data/models/huggingface`，该目录随 `frameflow_data` 卷持久化。当前专用 4 核 / 8 GB 公网机使用 `small/int8`、单 Worker，并给容器分配 3.5 CPU / 4 GB；一次 71 秒热机测试的 ASR 阶段约 20.5 秒、Gemini 语义增强约 3.4 秒、完整流程约 26 秒。该记录受音频、CPU 调度、模型热身和磁盘缓存影响，不应外推为 SLA。首次下载完成后模型无需每次重新获取；升级时不要删除 `/data` 模型缓存。
+然后运行升级脚本。模型首次使用时会下载到 `HF_HOME=/data/models/huggingface`，该目录随 `frameflow_data` 卷持久化。当前专用 4 核 / 8 GB 公网机使用 `small/int8`、单 Worker，并给容器分配 3.5 CPU / 4 GB；一次 71 秒热机测试的 ASR 阶段约 20.5 秒、Gemini 语义增强约 3.1 秒、完整流程约 26 秒。该记录受音频、CPU 调度、模型热身和磁盘缓存影响，不应外推为 SLA。首次下载完成后模型无需每次重新获取；升级时不要删除 `/data` 模型缓存。
 
 ### 本地 Embedding
 

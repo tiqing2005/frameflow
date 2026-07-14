@@ -189,7 +189,7 @@ pip install -r backend/requirements-embeddings-local.txt
 - 小素材库在内存计算 TF-IDF 更透明；规模增长后可迁移向量数据库或搜索服务。
 - 当前版本已有单管理员应用内登录与部署层 Basic Auth，但没有用户注册、项目归属、RBAC 或多租户隔离；进程内限流也不等同于分布式配额。
 - 媒体上传有大小、类型和私有源文件保护，但不包含杀毒或恶意媒体沙箱扫描，公网演示仍应限制访问范围和运行时间。
-- 本地 ASR 依赖较重且首次需要下载模型。当前一次热机实测中，3.5 CPU / 4 GB 容器处理 71 秒音频的转写阶段约 20.5 秒，Gemini 语义增强约 3.4 秒，完整流程约 26 秒；这是样本记录而非性能 SLA，长音频应预留排队和处理时间。
+- 本地 ASR 依赖较重且首次需要下载模型。当前一次热机实测中，3.5 CPU / 4 GB 容器处理 71 秒音频的转写阶段约 20.5 秒，Gemini 语义增强约 3.1 秒，完整流程约 26 秒；这是样本记录而非性能 SLA，长音频应预留排队和处理时间。
 - Hugging Face 与 `faster-whisper` 模型缓存位于持久化卷 `/data/models/huggingface`，容器升级不会重复丢失缓存。
 
 详见 [已知问题](docs/KNOWN_ISSUES.md)、[架构说明](docs/ARCHITECTURE.md) 和 [数据模型](docs/DATA_MODEL.md)。
