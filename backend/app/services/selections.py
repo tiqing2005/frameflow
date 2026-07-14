@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ..models import Selection, utcnow
@@ -11,6 +11,10 @@ from .common import _get_asset, _get_segment, add_audit
 def put_selection(
     session: Session, segment_id: str, asset_id: str, request_id: str | None
 ) -> dict:
+    if session.get_bind().dialect.name == "sqlite":
+        # Pair with asset deactivation's write lock to preserve the invariant
+        # that every Selection references an active Asset under concurrency.
+        session.execute(text("BEGIN IMMEDIATE"))
     segment = _get_segment(session, segment_id)
     asset = _get_asset(session, asset_id, active_only=True)
     selection = session.scalar(select(Selection).where(Selection.segment_id == segment.id))

@@ -5,7 +5,6 @@ import json
 import shutil
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -80,19 +79,21 @@ def _upsert_asset(
 ) -> str:
     asset_id = f"seed-{slug}"
     asset = session.get(Asset, asset_id)
+    created = asset is None
     if asset is None:
         asset = Asset(id=asset_id)
         session.add(asset)
-    asset.name = name
+    if created:
+        asset.name = name
+        asset.tags_json = json.dumps(tags, ensure_ascii=False)
+        asset.keywords_json = json.dumps(keywords, ensure_ascii=False)
+        asset.active = True
     asset.kind = kind
     asset.public_url = public_url
     asset.storage_path = str(path)
     asset.mime_type = mime_type
     asset.size_bytes = path.stat().st_size
-    asset.tags_json = json.dumps(tags, ensure_ascii=False)
-    asset.keywords_json = json.dumps(keywords, ensure_ascii=False)
     asset.is_seed = True
-    asset.active = True
     return asset_id
 
 
@@ -100,8 +101,6 @@ def seed_assets(session: Session, settings: Settings) -> None:
     seed_dir = settings.data_dir / "media" / "seed"
     seed_dir.mkdir(parents=True, exist_ok=True)
     source_dir = Path(__file__).resolve().parents[1] / "seed_media"
-    active_ids: set[str] = set()
-
     for slug, name, tags, keywords, primary, accent in SEED_ASSETS:
         source = source_dir / f"{slug}.jpg"
         target = seed_dir / f"{slug}.jpg"
@@ -112,41 +111,33 @@ def seed_assets(session: Session, settings: Settings) -> None:
             target = seed_dir / f"{slug}.svg"
             target.write_text(_fallback_svg(name, primary, accent), encoding="utf-8")
             mime = "image/svg+xml"
-        active_ids.add(
-            _upsert_asset(
-                session,
-                slug=slug,
-                name=name,
-                kind="image",
-                path=target,
-                public_url=f"/media/seed/{target.name}",
-                mime_type=mime,
-                tags=tags,
-                keywords=keywords,
-            )
+        _upsert_asset(
+            session,
+            slug=slug,
+            name=name,
+            kind="image",
+            path=target,
+            public_url=f"/media/seed/{target.name}",
+            mime_type=mime,
+            tags=tags,
+            keywords=keywords,
         )
 
     for slug, name, tags, keywords in SEED_VIDEOS:
         source = source_dir / f"{slug}.mp4"
         target = seed_dir / f"{slug}.mp4"
         _copy_media(source, target)
-        active_ids.add(
-            _upsert_asset(
-                session,
-                slug=slug,
-                name=name,
-                kind="video",
-                path=target,
-                public_url=f"/media/seed/{target.name}",
-                mime_type="video/mp4",
-                tags=tags,
-                keywords=keywords,
-            )
+        _upsert_asset(
+            session,
+            slug=slug,
+            name=name,
+            kind="video",
+            path=target,
+            public_url=f"/media/seed/{target.name}",
+            mime_type="video/mp4",
+            tags=tags,
+            keywords=keywords,
         )
-
-    for asset in session.scalars(select(Asset).where(Asset.is_seed.is_(True))).all():
-        if asset.id not in active_ids:
-            asset.active = False
 
     if session.get(FaultControl, 1) is None:
         session.add(FaultControl(id=1, next_mode="none"))

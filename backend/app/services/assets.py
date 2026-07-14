@@ -4,18 +4,19 @@ import mimetypes
 import re
 import uuid
 from pathlib import Path
+from typing import BinaryIO
 
-from sqlalchemy import event, func, or_, select
+from sqlalchemy import event, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..errors import APIError
 from ..llm import suggest_asset_tags_detailed
-from ..models import AIRun, Asset
+from ..models import AIRun, Asset, Selection
 from ..nlp import extract_keywords, infer_topic
 from ..schemas import AssetPatch
 from ..serializers import asset_dict
-from .common import _get_asset, add_audit, dumps, stable_hash
+from .common import _get_asset, add_audit, dumps, stable_hash, stream_upload_to_path
 
 ASSET_EXTENSIONS = {
     ".png": "image",
@@ -87,7 +88,7 @@ def create_asset(
     settings: Settings,
     filename: str,
     content_type: str | None,
-    content: bytes,
+    upload: BinaryIO,
     name: str,
     tags: str,
     keywords: str,
@@ -101,15 +102,14 @@ def create_asset(
     kind = ASSET_EXTENSIONS.get(suffix)
     if kind is None:
         raise APIError(415, "UNSUPPORTED_ASSET_TYPE", "仅支持常见图片或 MP4/WebM/MOV 视频素材")
-    if not content:
-        raise APIError(422, "EMPTY_UPLOAD", "上传文件不能为空")
-    if len(content) > settings.max_upload_bytes:
-        raise APIError(413, "UPLOAD_TOO_LARGE", "上传文件超过大小限制")
-    if not _valid_asset_signature(content, suffix):
-        raise APIError(415, "ASSET_SIGNATURE_MISMATCH", "素材内容与扩展名不匹配；用户上传 SVG 已禁用以避免脚本风险")
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     path = settings.data_dir / "media" / "uploads" / "assets" / stored_name
-    path.write_bytes(content)
+    size_bytes, _sha256, head = stream_upload_to_path(
+        upload, path, settings.max_upload_bytes
+    )
+    if not _valid_asset_signature(head, suffix):
+        path.unlink(missing_ok=True)
+        raise APIError(415, "ASSET_SIGNATURE_MISMATCH", "素材内容与扩展名不匹配；用户上传 SVG 已禁用以避免脚本风险")
     def cleanup_after_rollback(_session: Session) -> None:
         path.unlink(missing_ok=True)
 
@@ -138,7 +138,7 @@ def create_asset(
             public_url=f"/media/uploads/assets/{stored_name}",
             storage_path=str(path),
             mime_type=content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
-            size_bytes=len(content),
+            size_bytes=size_bytes,
             tags_json=dumps(tag_values),
             keywords_json=dumps(keyword_values),
             is_seed=False,
@@ -187,6 +187,10 @@ def create_asset(
 def patch_asset(
     session: Session, asset_id: str, payload: AssetPatch, request_id: str | None
 ) -> Asset:
+    if payload.active is False and session.get_bind().dialect.name == "sqlite":
+        # Serialize against manual selection writes so an asset cannot become
+        # inactive between selection validation and persistence.
+        session.execute(text("BEGIN IMMEDIATE"))
     asset = _get_asset(session, asset_id)
     before = asset_dict(asset)
     if payload.name is not None:
@@ -196,12 +200,30 @@ def patch_asset(
     if payload.keywords is not None:
         asset.keywords_json = dumps(payload.keywords)
     if payload.active is not None:
-        if asset.is_seed and not payload.active:
+        if asset.active and not payload.active:
+            selection_count = session.scalar(
+                select(func.count()).select_from(Selection).where(Selection.asset_id == asset.id)
+            ) or 0
+            if selection_count:
+                raise APIError(
+                    409,
+                    "ASSET_IN_USE",
+                    "该素材仍被项目片段使用，请先替换相关片段的素材",
+                    details={"asset_id": asset.id, "selection_count": selection_count},
+                )
             active_count = session.scalar(
                 select(func.count()).select_from(Asset).where(Asset.active.is_(True))
             ) or 0
             if active_count <= MINIMUM_ACTIVE_ASSETS:
-                raise APIError(409, "MINIMUM_ASSET_GUARD", "至少保留 3 个启用素材")
+                raise APIError(
+                    409,
+                    "MINIMUM_ASSET_GUARD",
+                    f"至少保留 {MINIMUM_ACTIVE_ASSETS} 个启用素材",
+                    details={
+                        "minimum_active_assets": MINIMUM_ACTIVE_ASSETS,
+                        "active_assets": active_count,
+                    },
+                )
         asset.active = payload.active
     session.flush()
     add_audit(

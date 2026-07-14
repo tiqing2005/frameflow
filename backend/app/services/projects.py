@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import mimetypes
 import uuid
 from pathlib import Path
+from typing import BinaryIO
 
 from sqlalchemy import delete, event, func, select, text as sql_text
 from sqlalchemy.orm import Session
@@ -23,7 +25,7 @@ from ..models import (
     Source,
 )
 from ..serializers import job_dict, project_dict, source_dict
-from .common import _get_project, add_audit, dumps, stable_hash
+from .common import _get_project, add_audit, dumps, stable_hash, stream_upload_to_path
 from .segments import _segment_detail
 
 SOURCE_EXTENSIONS = {
@@ -61,11 +63,9 @@ def _delete_after_commit(session: Session, path: Path) -> None:
 def _valid_source_signature(content: bytes, suffix: str) -> bool:
     head = content[:64]
     if suffix in {".txt", ".srt", ".vtt"}:
-        try:
-            content[:4096].decode("utf-8-sig")
-            return b"\x00" not in head
-        except UnicodeDecodeError:
-            return False
+        # The bounded signature buffer may end in the middle of a UTF-8 code
+        # point. Full incremental UTF-8 validation happens after persistence.
+        return b"\x00" not in head
     if suffix == ".wav":
         return head.startswith(b"RIFF") and head[8:12] == b"WAVE"
     if suffix == ".flac":
@@ -81,6 +81,36 @@ def _valid_source_signature(content: bytes, suffix: str) -> bool:
     if suffix in {".webm", ".mkv"}:
         return head.startswith(b"\x1a\x45\xdf\xa3")
     return False
+
+
+def _validate_subtitle_file(path: Path, suffix: str, max_chars: int) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8-sig")()
+    char_count = 0
+    cue_count = 0
+    pending = ""
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                text = decoder.decode(chunk)
+                char_count += len(text)
+                if char_count > max_chars:
+                    raise APIError(413, "SUBTITLE_TOO_LONG", f"字幕内容最多 {max_chars} 个字符")
+                if suffix in {".srt", ".vtt"}:
+                    lines = (pending + text).splitlines(keepends=True)
+                    pending = ""
+                    if lines and not lines[-1].endswith(("\n", "\r")):
+                        pending = lines.pop()
+                    cue_count += sum("-->" in line for line in lines)
+            tail = decoder.decode(b"", final=True)
+            char_count += len(tail)
+            if char_count > max_chars:
+                raise APIError(413, "SUBTITLE_TOO_LONG", f"字幕内容最多 {max_chars} 个字符")
+            if suffix in {".srt", ".vtt"}:
+                cue_count += int("-->" in (pending + tail))
+    except UnicodeDecodeError as exc:
+        raise APIError(415, "SOURCE_SIGNATURE_MISMATCH", "字幕文件需使用 UTF-8 编码") from exc
+    if cue_count > MAX_SUBTITLE_CUES:
+        raise APIError(413, "SUBTITLE_TOO_MANY_CUES", "字幕最多包含 5000 个时间片段")
 
 
 def _existing_idempotent(
@@ -131,6 +161,10 @@ def create_text_project(
 ) -> tuple[Project, Job, bool]:
     title = title.strip()
     text = text.strip()
+    if not title or not text:
+        raise APIError(422, "VALIDATION_ERROR", "标题和文本内容不能为空")
+    if len(title) > 160 or len(text) > 100_000:
+        raise APIError(422, "VALIDATION_ERROR", "标题或文本内容超过长度限制")
     content_hash = stable_hash(title, text)
     _lock_idempotent_create(session, idempotency_key)
     existing = _existing_idempotent(session, idempotency_key, content_hash)
@@ -181,7 +215,7 @@ def create_upload_project(
     title: str,
     filename: str,
     content_type: str | None,
-    content: bytes,
+    upload: BinaryIO,
     idempotency_key: str | None,
     request_id: str | None,
 ) -> tuple[Project, Job, bool]:
@@ -193,36 +227,22 @@ def create_upload_project(
     kind = SOURCE_EXTENSIONS.get(suffix)
     if kind is None:
         raise APIError(415, "UNSUPPORTED_SOURCE_TYPE", "仅支持 TXT/SRT/VTT、常见音频或视频格式")
-    if not content:
-        raise APIError(422, "EMPTY_UPLOAD", "上传文件不能为空")
-    if len(content) > settings.max_upload_bytes:
-        raise APIError(413, "UPLOAD_TOO_LARGE", "上传文件超过大小限制")
-    if not _valid_source_signature(content, suffix):
-        raise APIError(415, "SOURCE_SIGNATURE_MISMATCH", "文件内容与扩展名不匹配或编码不受支持")
-    if kind == "text":
-        subtitle_text = content.decode("utf-8-sig")
-        if len(subtitle_text) > settings.max_subtitle_chars:
-            raise APIError(
-                413,
-                "SUBTITLE_TOO_LONG",
-                f"字幕内容最多 {settings.max_subtitle_chars} 个字符",
-            )
-        if suffix in {".srt", ".vtt"}:
-            cue_count = sum(1 for line in subtitle_text.splitlines() if "-->" in line)
-            if cue_count > MAX_SUBTITLE_CUES:
-                raise APIError(413, "SUBTITLE_TOO_MANY_CUES", "字幕最多包含 5000 个时间片段")
-    sha = hashlib.sha256(content).hexdigest()
-    request_hash = stable_hash(title, sha)
-    _lock_idempotent_create(session, idempotency_key)
-    existing = _existing_idempotent(session, idempotency_key, request_hash)
-    if existing:
-        return existing[0], existing[1], True
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     path = settings.data_dir / "private" / "sources" / stored_name
-    path.write_bytes(content)
-    _delete_after_rollback(session, path)
+    size_bytes, sha, head = stream_upload_to_path(upload, path, settings.max_upload_bytes)
     mime_type = content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
     try:
+        if not _valid_source_signature(head, suffix):
+            raise APIError(415, "SOURCE_SIGNATURE_MISMATCH", "文件内容与扩展名不匹配或编码不受支持")
+        if kind == "text":
+            _validate_subtitle_file(path, suffix, settings.max_subtitle_chars)
+        request_hash = stable_hash(title, sha)
+        _lock_idempotent_create(session, idempotency_key)
+        existing = _existing_idempotent(session, idempotency_key, request_hash)
+        if existing:
+            path.unlink(missing_ok=True)
+            return existing[0], existing[1], True
+        _delete_after_rollback(session, path)
         project = Project(title=title, status="queued", input_kind=kind)
         session.add(project)
         session.flush()
@@ -233,7 +253,7 @@ def create_upload_project(
             storage_path=str(path),
             public_url=None,
             mime_type=mime_type,
-            size_bytes=len(content),
+            size_bytes=size_bytes,
             sha256=sha,
         )
         job = Job(project_id=project.id, status="queued", stage="validating", progress=0)

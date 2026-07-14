@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, BinaryIO
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,6 +22,40 @@ def stable_hash(*parts: str) -> str:
         digest.update(part.encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def stream_upload_to_path(
+    source: BinaryIO,
+    path: Path,
+    max_bytes: int,
+    *,
+    chunk_size: int = 1024 * 1024,
+) -> tuple[int, str, bytes]:
+    """Persist an upload with bounded memory while computing validation metadata."""
+    size = 0
+    head = bytearray()
+    digest = hashlib.sha256()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        source.seek(0)
+        with path.open("xb") as target:
+            while True:
+                chunk = source.read(chunk_size)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    raise APIError(413, "UPLOAD_TOO_LARGE", "上传文件超过大小限制")
+                if len(head) < 64:
+                    head.extend(chunk[: 64 - len(head)])
+                digest.update(chunk)
+                target.write(chunk)
+        if size == 0:
+            raise APIError(422, "EMPTY_UPLOAD", "上传文件不能为空")
+        return size, digest.hexdigest(), bytes(head)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _get_project(session: Session, project_id: str) -> Project:

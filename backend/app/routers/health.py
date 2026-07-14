@@ -10,6 +10,7 @@ from .. import __version__
 from ..config import Settings
 from ..errors import APIError
 from ..models import Asset, Job, WorkerHeartbeat
+from ..services.assets import MINIMUM_ACTIVE_ASSETS
 from ._deps import SessionDep, SettingsDep
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
@@ -35,6 +36,7 @@ def ready_payload(session: Session, settings: Settings) -> dict:
     worker_state = "dead"
     current_job_id = None
     last_heartbeat = None
+    status_detail = None
     if heartbeat:
         value = heartbeat.heartbeat_at
         if value.tzinfo is None:
@@ -43,6 +45,7 @@ def ready_payload(session: Session, settings: Settings) -> dict:
         worker_online = age < max(15.0, settings.worker_poll_seconds * 8)
         last_heartbeat = value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         if worker_online:
+            status_detail = heartbeat.status_detail
             active_job = session.scalar(
                 select(Job)
                 .where(
@@ -53,19 +56,29 @@ def ready_payload(session: Session, settings: Settings) -> dict:
                 .order_by(Job.started_at, Job.created_at)
                 .limit(1)
             )
-            worker_state = "busy" if active_job else "idle"
+            worker_state = (
+                "isolated"
+                if heartbeat.operational_state == "isolated"
+                else ("busy" if active_job else "idle")
+            )
             current_job_id = active_job.id if active_job else None
     checks = {
         "database": "ok",
-        "seed_assets": {"ok": asset_count >= 12, "count": asset_count},
+        "seed_assets": {
+            "ok": asset_count >= MINIMUM_ACTIVE_ASSETS,
+            "count": asset_count,
+            "minimum": MINIMUM_ACTIVE_ASSETS,
+        },
         "worker": {
             "online": worker_online,
             "state": worker_state,
+            "accepting_jobs": worker_online and worker_state != "isolated",
+            "detail": status_detail,
             "current_job_id": current_job_id,
             "last_heartbeat": last_heartbeat,
         },
     }
-    if asset_count < 12 or not worker_online:
+    if asset_count < MINIMUM_ACTIVE_ASSETS or not worker_online or worker_state == "isolated":
         raise APIError(
             503,
             "NOT_READY",

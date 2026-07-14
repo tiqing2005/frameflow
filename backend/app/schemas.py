@@ -23,7 +23,7 @@ class TextProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     text: str = Field(min_length=2, max_length=100_000)
 
-    @field_validator("title", "text")
+    @field_validator("title", "text", mode="before")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
@@ -35,7 +35,7 @@ class SegmentPatch(BaseModel):
     keywords: list[str] | None = None
     version: int = Field(ge=1)
 
-    @field_validator("text", "topic")
+    @field_validator("text", "topic", mode="before")
     @classmethod
     def strip_optional(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
@@ -65,6 +65,11 @@ class SegmentOrder(BaseModel):
 class SelectionPut(BaseModel):
     asset_id: str = Field(min_length=1, max_length=64)
 
+    @field_validator("asset_id", mode="before")
+    @classmethod
+    def clean_asset_id(cls, value: str) -> str:
+        return value.strip()
+
 
 class PreviewCreate(BaseModel):
     force: bool = False
@@ -76,7 +81,7 @@ class AssetPatch(BaseModel):
     keywords: list[str] | None = None
     active: bool | None = None
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
     def clean_name(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None

@@ -65,6 +65,22 @@ class Database:
                     connection.execute(
                         text("CREATE INDEX IF NOT EXISTS ix_jobs_kind ON jobs (kind)")
                     )
+            heartbeat_columns = {
+                column["name"] for column in inspect(self.engine).get_columns("worker_heartbeats")
+            }
+            if "operational_state" not in heartbeat_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE worker_heartbeats ADD COLUMN operational_state "
+                            "VARCHAR(24) NOT NULL DEFAULT 'ready'"
+                        )
+                    )
+            if "status_detail" not in heartbeat_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text("ALTER TABLE worker_heartbeats ADD COLUMN status_detail TEXT")
+                    )
         from .seed import seed_assets
 
         with self.session() as session:

@@ -12,7 +12,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, event, func, or_, select, text, update
 
 from .asr import TranscriptionError, transcribe_file
 from .config import Settings
@@ -79,6 +79,7 @@ class DurableWorker:
         self.stopping = False
         self._claimed_generations: dict[str, int] = {}
         self._timed_out_pipelines: set[threading.Thread] = set()
+        self._isolation_detail: str | None = None
         # Resolve the semantic scorer once: True embedding (local BGE / remote)
         # when available, else None and rank_assets falls back to char-ngram.
         self._semantic_scorer = get_semantic_scorer(settings)
@@ -90,22 +91,43 @@ class DurableWorker:
     def stop(self) -> None:
         self.stopping = True
 
-    def heartbeat(self) -> None:
-        now = utcnow()
-        with self.db.session() as session:
-            heartbeat = session.get(WorkerHeartbeat, 1)
-            if heartbeat is None:
-                session.add(WorkerHeartbeat(id=1, worker_id=self.worker_id, heartbeat_at=now))
-            else:
-                heartbeat.worker_id = self.worker_id
-                heartbeat.heartbeat_at = now
-
-    def claim(self) -> str | None:
+    def _refresh_timed_out_pipelines(self) -> bool:
         self._timed_out_pipelines = {
             thread for thread in self._timed_out_pipelines if thread.is_alive()
         }
-        if self._timed_out_pipelines:
+        if not self._timed_out_pipelines:
+            self._isolation_detail = None
+        return bool(self._timed_out_pipelines)
+
+    def heartbeat(self) -> None:
+        now = utcnow()
+        isolated = self._refresh_timed_out_pipelines()
+        operational_state = "isolated" if isolated else "ready"
+        status_detail = self._isolation_detail if isolated else None
+        with self.db.session() as session:
+            heartbeat = session.get(WorkerHeartbeat, 1)
+            if heartbeat is None:
+                session.add(
+                    WorkerHeartbeat(
+                        id=1,
+                        worker_id=self.worker_id,
+                        heartbeat_at=now,
+                        operational_state=operational_state,
+                        status_detail=status_detail,
+                    )
+                )
+            else:
+                heartbeat.worker_id = self.worker_id
+                heartbeat.heartbeat_at = now
+                heartbeat.operational_state = operational_state
+                heartbeat.status_detail = status_detail
+
+    def claim(self) -> str | None:
+        was_isolated = bool(self._timed_out_pipelines)
+        if self._refresh_timed_out_pipelines():
             return None
+        if was_isolated:
+            self.heartbeat()
         now = utcnow()
         lease_until = now + timedelta(seconds=self.settings.job_lease_seconds)
         with self.db.session() as session:
@@ -620,6 +642,7 @@ class DurableWorker:
 
     def _process_preview(self, job_id: str, generation: int) -> None:
         started = time.perf_counter()
+        temporary_output_path: Path | None = None
         try:
             self._stage(job_id, generation, "preview_planning", 8, "正在校验时间线与已选素材")
             with self.db.session() as session:
@@ -641,10 +664,14 @@ class DurableWorker:
             self._stage(job_id, generation, "preview_rendering", 35, "正在组合素材并生成 H.264 预览视频")
             output_dir = self.settings.data_dir / "media" / "previews" / plan["project_id"]
             output_path = output_dir / f"{plan['input_hash'][:20]}.mp4"
+            temporary_output_path = output_dir / (
+                f".{plan['input_hash'][:20]}.{job_id}.rendering.mp4"
+            )
+            temporary_output_path.unlink(missing_ok=True)
             try:
                 result = render_preview(
                     plan,
-                    output_path,
+                    temporary_output_path,
                     timeout=min(
                         self.settings.preview_timeout,
                         self.settings.job_max_execution_seconds,
@@ -668,6 +695,14 @@ class DurableWorker:
                 )
                 if preview is None:
                     raise WorkerFailure("PREVIEW_NOT_FOUND", "预览任务记录不存在")
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(temporary_output_path, output_path)
+
+                def cleanup_failed_publish(_session) -> None:
+                    output_path.unlink(missing_ok=True)
+
+                event.listen(session, "after_rollback", cleanup_failed_publish, once=True)
+                result["output_path"] = str(output_path)
                 preview.status = "succeeded"
                 preview.storage_path = str(output_path)
                 preview.output_url = (
@@ -746,6 +781,9 @@ class DurableWorker:
                 generation,
                 WorkerFailure("PREVIEW_UNEXPECTED_ERROR", "预览生成发生未预期错误", True),
             )
+        finally:
+            if temporary_output_path is not None:
+                temporary_output_path.unlink(missing_ok=True)
 
     def _process_pipeline(self, job_id: str, generation: int) -> None:
         started = time.perf_counter()
@@ -903,6 +941,12 @@ class DurableWorker:
                     self._abandon_execution(job_id, generation)
                     return
                 if time.monotonic() >= deadline:
+                    self._timed_out_pipelines.add(pipeline)
+                    self._isolation_detail = (
+                        f"job {job_id} exceeded the hard timeout; "
+                        "waiting for its execution thread to exit"
+                    )
+                    self.heartbeat()
                     self._fail(
                         job_id,
                         generation,
@@ -912,7 +956,6 @@ class DurableWorker:
                             True,
                         ),
                     )
-                    self._timed_out_pipelines.add(pipeline)
                     return
         finally:
             stop_event.set()

@@ -290,3 +290,5 @@ class WorkerHeartbeat(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     worker_id: Mapped[str] = mapped_column(String(120), nullable=False)
     heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    operational_state: Mapped[str] = mapped_column(String(24), default="ready", nullable=False)
+    status_detail: Mapped[str | None] = mapped_column(Text)

@@ -60,16 +60,13 @@ def post_upload_project(
     file: Annotated[UploadFile, File()],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
-    # Check the limit while streaming from SpooledTemporaryFile to avoid an
-    # unbounded read in request handling.
-    content = file.file.read(settings.max_upload_bytes + 1)
     project, job, replay = create_upload_project(
         session,
         settings,
         title,
         file.filename or "upload",
         file.content_type,
-        content,
+        file.file,
         idempotency_key,
         request_id(request),
     )

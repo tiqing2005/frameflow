@@ -34,13 +34,12 @@ def post_asset(
     tags: Annotated[str, Form()] = "",
     keywords: Annotated[str, Form()] = "",
 ):
-    content = file.file.read(settings.max_upload_bytes + 1)
     asset = create_asset(
         session,
         settings,
         file.filename or "asset",
         file.content_type,
-        content,
+        file.file,
         name,
         tags,
         keywords,

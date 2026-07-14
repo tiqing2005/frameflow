@@ -67,7 +67,7 @@ def retry_job(session: Session, job_id: str, request_id: str | None) -> dict:
     session.add(
         JobEvent(
             job_id=job.id,
-            stage="validating",
+            stage=job.stage,
             progress=job.progress,
             message=(
                 f"已请求重新执行原任务；保留第 {job.attempt} 次失败"

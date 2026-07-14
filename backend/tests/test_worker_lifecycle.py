@@ -105,7 +105,7 @@ def test_execution_generation_change_fences_late_result(runtime, monkeypatch):
 
 
 def test_timed_out_pipeline_blocks_new_claim_until_it_unwinds(runtime, monkeypatch):
-    client, worker, _database, settings = runtime
+    client, worker, database, settings = runtime
     settings.job_max_execution_seconds = 0.15
     started, release = install_slow_asr(monkeypatch)
     first = create_audio_job(client, "bounded-timeout-first")
@@ -115,11 +115,22 @@ def test_timed_out_pipeline_blocks_new_claim_until_it_unwinds(runtime, monkeypat
     runner.join(2)
     assert not runner.is_alive()
     assert client.get(f"/api/v1/jobs/{first['job']['id']}").json()["job"]["error_code"] == "JOB_TIMEOUT"
+    readiness = client.get("/api/v1/health/ready")
+    assert readiness.status_code == 503
+    worker_check = readiness.json()["details"]["checks"]["worker"]
+    assert worker_check["online"] is True
+    assert worker_check["state"] == "isolated"
+    assert worker_check["accepting_jobs"] is False
+    assert first["job"]["id"] in worker_check["detail"]
     second = create_audio_job(client, "bounded-timeout-second")
     assert worker.claim() is None
     release.set()
     wait_until(lambda: not next(iter(worker._timed_out_pipelines)).is_alive())
     assert worker.claim() == second["job"]["id"]
+    with database.session() as session:
+        heartbeat = session.get(WorkerHeartbeat, 1)
+        assert heartbeat.operational_state == "ready"
+        assert heartbeat.status_detail is None
 
 
 def test_job_timeout_fences_late_asr_result(runtime, monkeypatch):
