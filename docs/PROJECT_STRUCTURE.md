@@ -2,11 +2,11 @@
 
 ## 1. 设计原则
 
-- 仓库按“可独立构建的前端”、“可独立运行的 API/Worker”和“交付证据”分区。
-- 后端保持模块化单体，业务模型与 Provider/HTTP 边界分开，不为 Demo 拆分微服务。
+- 仓库按“可独立构建的前端”、“可独立运行的 API/Worker”和“质量保障与运维资料”分区。
+- 后端保持模块化单体，业务模型与 Provider/HTTP 边界分开，不因当前规模过早拆分微服务。
 - API 和 Worker 共用相同的数据模型、配置和处理服务，避免两套规则。
 - 前端只通过 `/api/v1` 契约读写，不直接读取 SQLite 或拼接磁盘路径。
-- `docs/`、`scripts/` 和 CI 属于交付产物，不与运行时代码混在一起。
+- `docs/`、`scripts/` 和 CI 属于工程支持与质量资产，不与运行时代码混在一起。
 
 ## 2. 顶层目录
 
@@ -14,7 +14,7 @@
 frameflow/
 ├─ .github/
 │  └─ workflows/
-│     └─ ci.yml                 # 后端测试、前端 lint/build、浏览器与交付门禁
+│     └─ ci.yml                 # 后端测试、前端 lint/build、浏览器与发布门禁
 ├─ backend/
 │  ├─ app/                       # FastAPI、领域模型、Worker 和处理管线
 │  ├─ tests/                     # 单元、API 集成与持久化测试
@@ -29,11 +29,11 @@ frameflow/
 │  ├─ package-lock.json
 │  └─ vite.config.ts
 ├─ demo/
-│  ├─ sample-transcript.txt      # 稳定主演示文本
+│  ├─ sample-transcript.txt      # 可重复验证主流程的示例文本
 │  ├─ failure-retry-transcript.txt
 │  └─ sample-zh.wav              # 仅在真实 ASR 已配置时用于转写验证
 ├─ deploy/                            # 首次部署、升级、回滚、备份、恢复与 smoke
-├─ docs/                              # PRD、架构、API、测试、演示与风险文档
+├─ docs/                              # PRD、架构、API、测试、操作与风险文档
 ├─ evaluation/                        # 匹配质量离线评测与固定数据集
 ├─ scripts/
 │  ├─ acceptance.ps1             # Windows 可重复 API 验收
@@ -46,10 +46,10 @@ frameflow/
 ├─ docker-compose.yml                 # 单机应用、持久卷与边缘代理编排
 ├─ Caddyfile                          # Caddy HTTPS 与安全头入口
 ├─ Makefile                           # 常用开发/运维命令
-├─ PROJECT_SPEC.md                    # 项目实现合同，设计不可与其冲突
+├─ PROJECT_SPEC.md                    # 核心工程约束，设计与实现需保持一致
 ├─ start-frameflow.cmd                # Windows 双击启动入口
 ├─ LICENSE
-└─ README.md                          # 交付入口，引用 docs 中的详细证据
+└─ README.md                          # 项目入口，引用 docs 中的详细说明与验证结果
 ```
 
 `backend/data/`、`frontend/node_modules/`、`frontend/dist/`、本地 `.env` 和测试临时数据不应提交。
@@ -69,7 +69,7 @@ backend/app/
 ├─ schemas.py       # Pydantic 请求校验模型
 ├─ serializers.py   # ORM 实体到稳定 API 响应的序列化边界
 ├─ errors.py        # 领域错误、统一 HTTP 错误包装和 request_id
-├─ middleware.py    # 单机演示读写分桶限流、标准 429 与 Retry-After
+├─ middleware.py    # 单实例读写分桶限流、标准 429 与 Retry-After
 ├─ auth.py          # 密码哈希、身份校验、会话令牌与过期清理
 ├─ nlp.py           # 规则分段、关键词、n-gram TF-IDF 混合排序
 ├─ embeddings.py    # 语义相似度 Provider 边界（本地 BGE / 远程 / 字符回退）
@@ -105,7 +105,7 @@ backend/app/
     ├─ assets.py    # 素材列表/上传/编辑/删除和标签任务入队
     ├─ asset_tagging.py # 视觉→文本→规则标签链、租约栅栏与结果落库
     ├─ image_generations.py # 生图创建、状态操作、草稿入库与片段应用
-    ├─ jobs.py      # 任务详情/重试/取消/演示故障
+    ├─ jobs.py      # 任务详情/重试/取消/受控故障演练
     ├─ previews.py  # 时间线计划、指纹幂等与预览 Job 创建/查询
     ├─ runs.py      # AI 运行记录
     └─ audit.py     # 审计事件
@@ -177,7 +177,7 @@ frontend/src/
 │  ├─ AssetsPage.tsx          # 素材库、上传、自动标签与文生图入口
 │  ├─ ImageGenerationPage.tsx # 独立文生图工作台路由页
 │  ├─ RunsPage.tsx            # 侧栏“运行记录”对应的 AI/匹配追溯页
-│  └─ DemoPage.tsx            # 侧栏“演示工具”对应的一次性故障注入页
+│  └─ DemoPage.tsx            # 侧栏“演示工具”对应的受控故障演练页
 ├─ components/
 │  ├─ ui.tsx                  # 精简的基础组件/图标、骨架、Toast
 │  └─ ImageGenerationStudio.tsx # 素材库/字幕共用的生图表单、轮询与入库交互
@@ -197,7 +197,7 @@ npm run lint
 npm run build
 ```
 
-`VITE_API_BASE_URL` 仅在前后端分离开发时设置；同源交付默认使用 `/api/v1`。任何密钥都不能以 `VITE_` 变量存在。
+`VITE_API_BASE_URL` 仅在前后端分离开发时设置；同源部署默认使用 `/api/v1`。任何密钥都不能以 `VITE_` 变量存在。
 
 ## 5. 数据目录
 
@@ -248,11 +248,11 @@ scripts/
 
 ## 7. 文档优先级与真实性
 
-- `PROJECT_SPEC.md`：实现合同，比说明性文档优先级更高。
+- `PROJECT_SPEC.md`：核心工程约束，比说明性文档优先级更高。
 - `PRD.md`：定义为什么做、做什么和什么不做。
 - `API.md` / `DATA_MODEL.md`：前后端与持久化契约。
 - `ARCHITECTURE.md`：解释系统分解与决策。
 - `TEST_PLAN.md`：证明哪些能力已实测。
 - `KNOWN_ISSUES.md`：如实披露尚未实现或未验证的内容。
 
-若文档与运行时 OpenAPI/测试结果不一致，必须在提交前修正文档，不能以“设计上支持”代替真实实现。
+若文档与运行时 OpenAPI 或测试结果不一致，必须在发布前修正文档，不能以“设计上支持”代替真实实现。

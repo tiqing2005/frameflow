@@ -2,7 +2,7 @@
 
 本文描述随仓库交付的 Linux VPS 方案：一个 FrameFlow 容器运行 FastAPI API 与有界持久化 Worker 进程池。当前专用 4 核 / 8 GB 公网主机给应用容器分配 3.5 CPU / 4 GB，并使用单 Worker，让本地 ASR 独占主要计算资源。默认可由 Caddy 容器负责反向代理和自动 HTTPS；如果宿主机已经运行 Nginx（例如同机承载其他域名），使用 `external-nginx` 覆盖，让 FrameFlow 仅监听宿主机回环地址 `127.0.0.1:8080`，不抢占 80/443。SQLite、上传文件、种子素材和可选模型统一保存在 Docker 具名卷的 `/data`。
 
-> 适用边界：作品演示、招聘作业验收和低并发单机服务。`FRAMEFLOW_WORKER_CONCURRENCY` 可配置同一容器内的并发任务数（1–16）；CPU 本地运行 `faster-whisper` 时建议保持为 `1`，通过提高单 Worker 的 CPU 配额提速。它不是多租户生产集群方案，不应横向扩容多个 SQLite 写实例。
+> 适用边界：作品演示、功能验收和低并发单机服务。`FRAMEFLOW_WORKER_CONCURRENCY` 可配置同一容器内的并发任务数（1–16）；CPU 本地运行 `faster-whisper` 时建议保持为 `1`，通过提高单 Worker 的 CPU 配额提速。它不是多租户生产集群方案，不应横向扩容多个 SQLite 写实例。
 
 ## 1. 前置条件
 
@@ -167,7 +167,7 @@ bash deploy/configure-auth.sh disable
 
 本地全新数据目录可保留 `FRAMEFLOW_AUTH_LOCAL_SETUP_ENABLED=true`：首次打开登录页时，只能从 API 所在机器的回环地址创建一个管理员账号。账号创建后入口永久转为登录；若数据库已存在身份记录，修改该开关不会重新开放认领。
 
-不要在仓库、截图或演示视频中公开管理员密码。向面试官提供测试账号时，应使用单独的临时密码，并在验收结束后更换或下线实例。
+不要在仓库、截图或演示视频中公开管理员密码。向授权体验者提供测试账号时，应使用单独的临时密码，并在体验结束后更换或下线实例。
 
 ### 请求体、资源和日志上限
 
@@ -394,7 +394,7 @@ bash deploy/smoke.sh
 - Caddy 模式由 Caddy 终止 TLS，应用端口 `8000` 只存在于 Compose 内部网络；external-nginx 模式由宿主机 Nginx 终止 TLS，应用只发布到 `127.0.0.1:8080`。
 - 应用以非 root 用户运行；两个容器均启用只读根文件系统、`no-new-privileges`、能力裁剪、PID/CPU/内存限制和日志轮转。
 - 当前演示版已有单管理员应用登录、CSRF 防护、整站 Basic Auth 与单进程读写限流，但没有租户隔离、RBAC、分布式配额或恶意内容扫描；不要把它当作多租户授权系统。
-- 删除、上传和演示故障注入接口由管理员会话统一保护，但没有更细的资源归属权限。公开面试 Demo 应保持默认 Caddy Basic Auth，并建议叠加云防火墙白名单、VPN/Tailscale；不要把它当作匿名公共 SaaS。
+- 删除、上传和演示故障注入接口由管理员会话统一保护，但没有更细的资源归属权限。公网演示环境应保持默认 Caddy Basic Auth，并建议叠加云防火墙白名单、VPN/Tailscale；不要把它当作匿名公共 SaaS。
 - Caddy/Nginx 安全响应头不能替代应用鉴权与上传内容治理。
 - 多实例、高可用或大规模素材库应迁移到 PostgreSQL、对象存储、专用队列与独立 Worker；不要让多个容器并发写同一个 SQLite 文件。
 - 当前公网容器保持 `FRAMEFLOW_WORKER_CONCURRENCY=1`；本地 ASR 和 ffmpeg 预览会争用 CPU/内存，应优先提高单 Worker 配额，提高并发前必须压测。
