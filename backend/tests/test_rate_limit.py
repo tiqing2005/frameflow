@@ -25,6 +25,11 @@ def test_api_rate_limit_separates_reads_writes_and_excludes_health(tmp_path):
         assert limited.json()["code"] == "RATE_LIMITED"
         assert int(limited.headers["retry-after"]) >= 1
 
+        # DashScope fetches a short-lived signed source URL from outside the
+        # user session. Its callback must not share the UI/API read quota.
+        source = client.get("/api/v1/asr/source/not-a-valid-token")
+        assert source.status_code == 404
+
         assert client.post("/api/v1/demo/faults/next", json={"mode": "none"}).status_code == 200
         write_limited = client.post("/api/v1/demo/faults/next", json={"mode": "none"})
         assert write_limited.status_code == 429

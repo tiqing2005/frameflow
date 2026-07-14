@@ -524,6 +524,40 @@ def test_pipeline_records_semantic_and_matching_runs_separately(runtime):
     assert matching["output_summary"]["traces"]
 
 
+def test_audio_pipeline_records_dashscope_transcription_run(runtime, monkeypatch):
+    client, worker, _database, _settings = runtime
+
+    monkeypatch.setattr(
+        "app.worker.transcribe_file",
+        lambda _path, _mime_type, _settings: (
+            "阿里云百炼语音识别输出会继续进入字幕语义增强与素材匹配。",
+            "dashscope/paraformer-v2",
+        ),
+    )
+    response = client.post(
+        "/api/v1/projects/upload",
+        data={"title": "DashScope 转写追踪"},
+        files={"file": ("trace.wav", b"RIFF\x04\x00\x00\x00WAVE", "audio/wav")},
+        headers={"Idempotency-Key": "dashscope-trace-run"},
+    )
+    assert response.status_code == 202, response.text
+    created = response.json()
+    assert worker.run_once() is True
+
+    transcription = next(
+        item
+        for item in client.get("/api/v1/runs").json()["items"]
+        if item["operation"] == "speech_transcription"
+        and item["job_id"] == created["job"]["id"]
+    )
+    assert transcription["provider"] == "dashscope"
+    assert transcription["model"] == "paraformer-v2"
+    assert transcription["prompt_version"] == "speech-transcription-v1"
+    assert transcription["status"] == "succeeded"
+    assert transcription["output_summary"]["source_kind"] == "audio"
+    assert transcription["output_summary"]["characters"] > 0
+
+
 def test_matching_run_records_actual_embedding_provider(runtime):
     client, worker, _database, _settings = runtime
 

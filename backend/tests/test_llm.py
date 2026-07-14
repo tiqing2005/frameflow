@@ -43,6 +43,44 @@ def test_openai_compatible_semantic_enhancement_success(tmp_path):
     assert [item["topic"] for item in result.segments] == ["智能办公", "数据安全"]
 
 
+def test_builtin_deepseek_transport_retains_vendor_in_trace(tmp_path, monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "segments": [
+                                        {
+                                            "text": TEXT,
+                                            "topic": "智能与安全",
+                                            "keywords": ["人工智能", "数据安全", "用户隐私"],
+                                        }
+                                    ]
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: FakeResponse())
+    result = enhance_semantic_segments(
+        TEXT,
+        settings(tmp_path, llm_provider="deepseek", llm_model="DeepSeek-V4-Pro"),
+    )
+
+    assert result.degraded is False
+    assert result.provider == "deepseek"
+    assert result.model == "DeepSeek-V4-Pro"
+
+
 def test_invalid_json_schema_response_degrades_to_rules(tmp_path, monkeypatch):
     class FakeResponse:
         def raise_for_status(self):

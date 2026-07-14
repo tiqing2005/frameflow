@@ -163,6 +163,7 @@ def test_cancel_running_job_stops_renewal_and_discards_late_result(runtime, monk
     settings.job_lease_seconds = 0.6
     started, release = install_slow_asr(monkeypatch)
     created = create_audio_job(client, "cancel-running")
+    next_job = create_audio_job(client, "cancel-running-next")
     job_id = created["job"]["id"]
     runner = threading.Thread(target=worker.run_once)
     runner.start()
@@ -170,8 +171,11 @@ def test_cancel_running_job_stops_renewal_and_discards_late_result(runtime, monk
     response = client.post(f"/api/v1/jobs/{job_id}/cancel")
     assert response.status_code == 200
     wait_until(lambda: not runner.is_alive())
+    assert worker._refresh_timed_out_pipelines() is True
+    assert worker.claim() is None
     release.set()
-    time.sleep(0.15)
+    wait_until(lambda: not worker._refresh_timed_out_pipelines())
+    assert worker.claim() == next_job["job"]["id"]
 
     with database.session() as session:
         job = session.get(Job, job_id)

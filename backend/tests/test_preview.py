@@ -28,6 +28,7 @@ def _ready_project(client, worker):
 def test_timeline_and_preview_render_are_durable_and_idempotent(runtime, monkeypatch):
     client, worker, _database, _settings = runtime
     project_id = _ready_project(client, worker)
+    rendered_paths: list[Path] = []
 
     timeline = client.get(f"/api/v1/projects/{project_id}/timeline")
     assert timeline.status_code == 200, timeline.text
@@ -44,6 +45,7 @@ def test_timeline_and_preview_render_are_durable_and_idempotent(runtime, monkeyp
     assert queued["idempotent_replay"] is False
 
     def fake_render(plan, output_path: Path, **_kwargs):
+        rendered_paths.append(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake-mp4-preview")
         return {
@@ -59,6 +61,9 @@ def test_timeline_and_preview_render_are_durable_and_idempotent(runtime, monkeyp
 
     monkeypatch.setattr("app.worker.render_preview", fake_render)
     assert worker.run_once() is True
+    assert len(rendered_paths) == 1
+    assert f".g1.{worker.worker_token}.rendering.mp4" in rendered_paths[0].name
+    assert not rendered_paths[0].exists()
 
     detail = client.get(f"/api/v1/projects/{project_id}/preview")
     assert detail.status_code == 200
