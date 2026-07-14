@@ -1,4 +1,8 @@
 import { expect, test, type Route } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
+
+const SAMPLE_VIDEO = fileURLToPath(new URL('../../backend/seed_media/video-smart-city.mp4', import.meta.url))
+const SAMPLE_POSTER = fileURLToPath(new URL('../../backend/seed_media/video-smart-city-poster.jpg', import.meta.url))
 
 const projectDetail = (id: string, title: string) => ({
   project: {
@@ -87,6 +91,8 @@ test('快速切换项目时，旧项目的慢响应不会覆盖当前工作台',
 })
 
 test('素材搜索只接纳最新结果，视频使用文件地址播放并将缩略图作为海报', async ({ page }) => {
+  await page.route('**/media/fast-video.mp4', (route) => route.fulfill({ path: SAMPLE_VIDEO, contentType: 'video/mp4' }))
+  await page.route('**/media/fast-video-poster.jpg', (route) => route.fulfill({ path: SAMPLE_POSTER, contentType: 'image/jpeg' }))
   await page.route('**/api/v1/**', async (route) => {
     if (await mockDashboard(route)) return
     const request = route.request()

@@ -164,6 +164,7 @@ def test_encoder_probe_never_exceeds_render_deadline(tmp_path, monkeypatch):
         return Completed()
 
     monkeypatch.setattr("app.preview.subprocess.run", fake_run)
+    monkeypatch.setattr("app.preview._ffmpeg_executable", lambda: "ffmpeg")
     from app.preview import _video_encoder
 
     deadline = time.monotonic() + 0.2

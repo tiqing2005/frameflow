@@ -1,8 +1,10 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
 
 const PROJECT_ID = 'project-preview'
 const JOB_ID = 'job-preview'
 const OUTPUT_URL = '/media/previews/project-preview/final.mp4'
+const SAMPLE_VIDEO = fileURLToPath(new URL('../../backend/seed_media/video-smart-city.mp4', import.meta.url))
 
 const asset = (id: string, name: string, kind: 'image' | 'video' = 'image') => ({
   id,
@@ -84,7 +86,7 @@ function preview(status: 'queued' | 'running' | 'succeeded', progress: number) {
   }
 }
 
-async function mockApi(page: Page, state: { finished: boolean; jobPolls: number; postBodies: unknown[]; stale?: boolean; rematched?: boolean; previewReads?: number }) {
+async function mockApi(page: Page, state: { finished: boolean; jobPolls: number; postBodies: unknown[]; stale?: boolean; rematched?: boolean; previewReads?: number; previewUnavailable?: boolean }) {
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -94,6 +96,10 @@ async function mockApi(page: Page, state: { finished: boolean; jobPolls: number;
     }
     if (request.method() === 'GET' && path === `/api/v1/projects/${PROJECT_ID}/preview`) {
       state.previewReads = (state.previewReads || 0) + 1
+      if (state.previewUnavailable) {
+        await route.fulfill({ status: 404, json: { code: 'NOT_FOUND', message: '请求的资源不存在', retryable: false } })
+        return
+      }
       const currentTimeline = state.rematched ? { ...timeline, input_hash: 'timeline-hash-v2' } : timeline
       const currentPreview = state.finished ? { ...preview('succeeded', 100), input_hash: state.stale ? 'old-timeline-hash' : timeline.input_hash } : null
       await route.fulfill({ json: { preview: currentPreview, timeline: currentTimeline } })
@@ -128,6 +134,7 @@ async function mockApi(page: Page, state: { finished: boolean; jobPolls: number;
 
 test('时间线可视化片段并完成预览创建、任务轮询与视频播放', async ({ page }) => {
   const state = { finished: false, jobPolls: 0, postBodies: [] as unknown[] }
+  await page.route(`**${OUTPUT_URL}`, (route) => route.fulfill({ path: SAMPLE_VIDEO, contentType: 'video/mp4' }))
   await mockApi(page, state)
   await page.goto(`/projects/${PROJECT_ID}`)
 
@@ -166,6 +173,18 @@ test('时间线变化后隐藏旧视频并明确提示重新生成', async ({ pa
   await expect.poll(() => state.postBodies).toEqual([{ force: true }])
 })
 
+test('预览文件加载失败时不再静默黑屏，并提供重新加载入口', async ({ page }) => {
+  const state = { finished: true, jobPolls: 0, postBodies: [] as unknown[] }
+  await page.route(`**${OUTPUT_URL}`, (route) => route.fulfill({ status: 404, body: 'missing' }))
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  await expect(timelineSection.getByText('预览文件暂时无法播放')).toBeVisible()
+  await expect(timelineSection.getByRole('button', { name: '重新加载视频' })).toBeVisible()
+  await expect(timelineSection.getByText('预览文件不可用')).toBeVisible()
+})
+
 test('重新匹配成功后刷新时间线与预览概览', async ({ page }) => {
   const state = { finished: false, jobPolls: 0, postBodies: [] as unknown[], previewReads: 0 }
   await mockApi(page, state)
@@ -177,4 +196,15 @@ test('重新匹配成功后刷新时间线与预览概览', async ({ page }) => 
 
   await expect.poll(() => state.previewReads || 0).toBeGreaterThan(readsBeforeRematch)
   await expect(page.getByRole('region', { name: '时间线' }).getByText('原预览已过期', { exact: false })).toHaveCount(0)
+})
+
+test('预览接口暂不可用时仍展示时间线，并给出可操作的后端提示', async ({ page }) => {
+  const state = { finished: false, jobPolls: 0, postBodies: [] as unknown[], previewUnavailable: true }
+  await mockApi(page, state)
+  await page.goto(`/projects/${PROJECT_ID}`)
+
+  const timelineSection = page.getByRole('region', { name: '时间线' })
+  await expect(timelineSection.locator('.timeline-clip')).toHaveCount(3)
+  await expect(timelineSection.getByText('组合预览接口暂不可用', { exact: false })).toBeVisible()
+  await expect(timelineSection.getByRole('button', { name: '生成预览视频' })).toBeEnabled()
 })
