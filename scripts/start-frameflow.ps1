@@ -48,6 +48,27 @@ function Test-HttpEndpoint {
     }
 }
 
+function Test-BackendContract {
+    param([string]$HealthUri)
+    try {
+        $apiBase = $HealthUri -replace '/api/v1/health/(live|ready)$', ''
+        $spec = Invoke-RestMethod -Uri "$apiBase/api/openapi.json" -TimeoutSec 3
+        $requiredPaths = @(
+            '/api/v1/projects/{project_id}/timeline',
+            '/api/v1/projects/{project_id}/preview'
+        )
+        foreach ($path in $requiredPaths) {
+            if ($null -eq $spec.paths.PSObject.Properties[$path]) {
+                return $false
+            }
+        }
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
 function Wait-ForEndpoints {
     param(
         [string]$BackendUri,
@@ -172,11 +193,28 @@ try {
             $existingUrl = [string]$state.frontend_url
             $existingHealth = [string]$state.backend_health_url
 
-            if ((Test-ProcessId $backendPid) -and (Test-ProcessId $frontendPid)) {
+            if ((Test-ProcessId $backendPid) -and
+                (Test-ProcessId $frontendPid) -and
+                (Test-BackendContract $existingHealth)) {
                 Write-Step "FrameFlow is already running. Waiting for its page..."
                 Wait-ForEndpoints -BackendUri $existingHealth -FrontendUri $existingUrl -TimeoutSeconds 60
                 Open-FrameFlow $existingUrl
                 return
+            }
+            if ((Test-ProcessId $backendPid) -or (Test-ProcessId $frontendPid)) {
+                Write-Step "The running FrameFlow instance uses an outdated API; restarting it."
+                $oldLauncherPid = [int]$state.launcher_pid
+                if (Test-ProcessId $oldLauncherPid) {
+                    & taskkill.exe /PID $oldLauncherPid /T /F 2>$null | Out-Null
+                    Start-Sleep -Milliseconds 750
+                }
+                else {
+                    foreach ($oldPid in @($backendPid, $frontendPid)) {
+                        if (Test-ProcessId $oldPid) {
+                            & taskkill.exe /PID $oldPid /T /F 2>$null | Out-Null
+                        }
+                    }
+                }
             }
         }
         catch {
