@@ -10,6 +10,7 @@
 - 幂等、版本冲突、失败、重试、取消与 Worker 恢复路径可重复。
 - 素材、运行记录和审计记录是真实数据，不依赖前端写死结果。
 - 自动标签、向量混排、时间线和预览渲染记录实际 provider/model/输入版本与降级状态。
+- 文生图从幂等创建、异步生成、草稿预览到入库/片段应用均可追溯，付费 Provider 不在默认测试中被调用。
 - 预览任务的重复请求、并发请求、超时、失败和重试不会产生孤儿任务或覆盖错误结果。
 - 无 ASR/LLM 时系统如实失败或降级，不伪造外部 AI 调用。
 
@@ -140,6 +141,14 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 - 1 个超过 `FRAMEFLOW_MAX_UPLOAD_MB` 的测试文件（在专用临时环境生成，不提交仓库）。
 - `demo/sample-zh.wav` 仅在真实本地/外部 ASR Provider 已安装并可访问时作为 ASR 证据。
 
+### TD-06：文生图固定数据
+
+- 提示词：`一张干净的城市夜景商业配图，蓝紫色灯光，无文字，无水印`。
+- 画幅：`16:9`；测试 Provider 返回仓库内固定的最小 PNG Base64，不调用真实网关。
+- 幂等 Key：`image-contract-001`；相同请求重放，修改 prompt 后构造冲突。
+- 非法响应：错误 Base64、文本文件、超出响应/输出字节上限、超大像素头。
+- 片段场景：创建后编辑 Segment，使 accept 携带旧 `expected_segment_version`。
+
 ## 6. 自动化测试矩阵
 
 ### 6.1 分段、关键词与排序
@@ -187,6 +196,17 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | API-24 | 目标总时长 | 三种分配策略精确达到归一化目标；上下界、指纹 409、批量恢复和审计均正确 |
 | API-25 | 时间线并发写 | 正文、排序、素材选择、rematch 与时长调整并发时无 500、无丢失写入；旧 attempt/旧 hash 不覆盖新状态 |
 | API-26 | API 限流 | 读写桶独立；超限返回 429、`Retry-After`、request_id，健康接口不受影响 |
+| API-27 | 文生图创建幂等 | 相同 Key/请求体返回同一 ImageGeneration 且 `idempotent_replay=true`；同 Key 不同请求体返回 409 |
+| API-28 | 文生图 Provider 边界 | MockTransport 覆盖合法 Base64、非法 Base64、非图片、超大响应/输出/像素；不发真实网络请求，不留部分文件 |
+| API-29 | 文生图状态迁移 | queued/running/succeeded/failed/canceled 的 retry、cancel、content、accept、discard 只允许合法迁移 |
+| API-30 | 文生图入库幂等 | accept 并发/重放只创建一个 Asset 和一个受管理文件，标签任务只排队一次 |
+| API-31 | 文生图片段版本锁 | 旧 `expected_segment_version` 返回 409，不覆盖新字幕 Selection；图片仍可只入库 |
+| API-32 | 文生图文件事务 | Provider 成功后 DB/文件失败均回滚拥有的文件；discard 与 accept 竞态只有一个终态，无孤儿文件 |
+| API-33 | 文生图标签闭环 | 入库后进入 Gemini 视觉标签；视觉未配置/失败时如实记录文本或规则降级，不伪造 Gemini 成功 |
+| API-34 | 片段生图幂等快照 | 首次创建后编辑 Segment，相同 Key/请求仍返回原任务与原 `segment_version`，不冲突、不产生第二次计费 |
+| API-35 | 已入库后应用 | auto-import 后再次 accept/select 复用同一 Asset；旧版本返回受控 409，当前版本更新 Selection 为 generated |
+| API-36 | 提交后文件清理失败 | after_commit unlink 抛出 OSError 时事务与 HTTP 仍成功，记录可供后续清理且不产生第二 Asset |
+| API-37 | 项目删除与文生图栅栏 | 删除项目会移除 queued/running/草稿任务并清理 staging，不再触发 Provider；已入库的全局 Asset 保留 |
 
 ### 6.3 故障、重试和恢复
 
@@ -202,6 +222,15 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | FAIL-08 | 无本地 ASR/无 Key | 媒体任务显式 `ASR_*` 配置/依赖错误，不生成假字幕 |
 | FAIL-09 | Worker 尝试耗尽 | 恢复任务达到 `max_attempts` 后不再领取，记录 `JOB_ATTEMPTS_EXHAUSTED` |
 | FAIL-10 | 硬超时线程未退出 | 当前任务按策略失败/重试，Worker 暂停领取新任务，不持续累积线程 |
+| FAIL-11 | 文生图租约恢复 | 过期 running 任务可重新领取，新 execution generation 生效，旧 Worker 迟到结果被丢弃并清理 |
+| FAIL-12 | 文生图取消迟到响应 | Provider 阻塞期间取消；响应随后到达不能改回 succeeded、落盘或自动入库 |
+| FAIL-13 | 文生图重试边界 | 429/明确可重试错误按上限重试；认证、内容拒绝、非法响应不可自动重试；attempt 不越界 |
+| FAIL-14 | 生图歧义错误分类 | 502/503/504、Read/Write/RemoteProtocol/其他 Timeout 进入 failed + 人工 retryable/ambiguous，不自动请求；仅 Connect/429 自动 |
+| FAIL-15 | staging 结果恢复 | submitted→result→ready 后 DB 写失败/Worker 重启，复用 ready PNG 且 Provider 总调用 1 次；只有 submitted 时不得自动重发 |
+| FAIL-16 | auto-import 窗口恢复 | succeeded 但 asset_id 为空的 auto-import 任务由租约步骤完成入库，Provider 不重复调用 |
+| FAIL-17 | 人工重试硬上限 | attempt=3 最后一次允许入队并把上限固定为 4；attempt>=4 返回 409 `IMAGE_RETRY_LIMIT_REACHED` |
+| FAIL-18 | 优雅停机 | serve 等待窗口为 `max(10, IMAGE_API_TIMEOUT+30)`，Compose stop grace 不短于该值，所有子进程共享截止时间并被回收 |
+| FAIL-19 | PostgreSQL 写锁 | `_lock_writes` 的 PostgreSQL 路径执行事务级 advisory lock，SQLite 路径保持 BEGIN IMMEDIATE |
 
 ### 6.4 前端运行记录统计
 
@@ -264,6 +293,17 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 7. 修改时长不立即创建预览任务，旧视频隐藏并显示“原预览已过期”；正文保存、预览创建和时长调整的快速连续操作保持互斥。
 8. 快速切换项目或卸载页面时取消旧轮询，旧响应不能覆盖当前项目。
 
+### E2E-05：文生图闭环
+
+1. 素材库输入提示词并选择画幅，提交后立即看到持久化 queued/running 状态，刷新页面任务不丢。
+2. 成功后预览草稿；未点击入库前素材总数不变，页面不展示第三方临时 URL。
+3. 点击“加入素材库”，看到同一图片 Asset 和标签处理中状态；重复点击不产生重复素材。
+4. 标签完成后能按 Gemini 标签搜索到素材；若视觉服务关闭，页面明确显示降级来源。
+5. 在工作台对当前字幕执行“AI 生成图片”，预览后“入库并应用”；刷新后 Selection 仍指向生成素材。
+6. 生成期间编辑该字幕，再尝试按旧版本应用；页面提示版本冲突且不覆盖新字幕，允许只入库或重新生成。
+7. 创建第二张草稿并丢弃；content URL 不再可读，素材库没有新增项。
+8. 快速双击创建、accept、cancel 或 discard，服务端保持幂等/互斥，不出现空卡片或孤儿文件。
+
 ## 9. 响应式与可访问性
 
 | ID | 视口/检查 | 通过标准 |
@@ -287,6 +327,10 @@ bash scripts/acceptance.sh http://127.0.0.1:8000
 | SEC-04 | 错误体/日志 | 无堆栈、数据库绝对路径、Key 或请求 Authorization Header |
 | SEC-05 | CORS | 本地只允许明确 origin；同源公网不使用带凭据的 `*` |
 | SEC-06 | 故障入口 | 页面明确标记 Demo；公网使用访问控制；不声称为真实 Provider 事件 |
+| SEC-07 | 图像密钥隔离 | `IMAGE_API_KEY` 不继承其他 Key，不进入前端、日志、AIRun、错误体或 Git |
+| SEC-08 | 图像响应安全 | 仅接收受限 Base64；拒绝模型 URL、畸形图片、超大响应/字节/像素并移除元数据 |
+| SEC-09 | 付费操作防滥用 | 每日额度、pending 上限和通用写限流同时生效；auto-import/auto-select 必须由本次请求显式授权 |
+| SEC-10 | staging 最小化 | manifest 仅含请求哈希、模型、画幅、尺寸和 usage；不含 Key、Authorization、提示词原文或 Base64 |
 
 PowerShell 仓库静态搜索可使用：
 
@@ -321,6 +365,8 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 | PERF-03 | 100 次轮询 GET Job | 无 SQLite locked 错误，进度单调、终态稳定 |
 | PERF-04 | 100 MB 上限附近文件 | 不一次性读入前端 JS 内存；超限被及时拒绝 |
 | PERF-05 | 公网真实音频与语义增强 | 记录各阶段耗时而非只记录总时长；当前一次 71 秒热机样本为 ASR 约 20.5 秒、Gemini 增强约 3.1 秒、完整流程约 26 秒，不作为 SLA |
+| PERF-06 | Mock 文生图并发与排队 | 同时创建至 `IMAGE_MAX_PENDING`，API 快速返回且单 Worker 有界领取；超过上限明确 429/409，不拖垮 ASR 健康检查 |
+| PERF-07 | 真实文生图人工样本 | 受控环境记录至少 20 次成功率、p50/p95、响应/输出大小、单张费用和 ASR 排队影响，不作为 SLA |
 
 若环境冷启需下载 ASR 模型，该时间必须单独记录，不与本地规则 PERF-01 混在一起。
 
@@ -333,6 +379,8 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 5. 无登录时确认平台访问口令/配额；有登录时使用提交的测试账号完整重跑。
 6. 从全新无痕窗口打开，证明不依赖开发者本地会话/缓存。
 7. 检查公网故障实验结束后 mode 恢复 `none`，避免下一位验收者意外失败。
+8. 文生图启用时，使用轮换后的专用 Key 人工生成一张非敏感图片，完成预览、入库、Gemini 标签、片段应用、删除与容器重启复读；保存耗时和运行记录，不保存 Key/Authorization。
+9. 执行 `docker compose --env-file deploy/.env config`，确认 `stop_grace_period >= IMAGE_API_TIMEOUT + 30s`；默认应为 240 秒。
 
 ## 14. 发布准入/准出
 
@@ -350,19 +398,29 @@ Get-ChildItem -Recurse -File -Exclude package-lock.json |
 - E2E-01/E2E-02 通过，手工选择刷新不丢。
 - 公网服务重启后数据仍存在。
 - 无真实密钥或本地数据被提交。
+- 文生图默认测试全部使用 MockTransport，真实付费验收的请求数、费用、Provider/model 和降级状态有人工记录。
 - `KNOWN_ISSUES.md`、`AI_USAGE.md` 与当前实现一致。
 - 主演示脚本完整彩排至少 1 次，故障注入在彩排后清零。
 
 ## 15. 执行记录模板
 
-### 2026-07-15 节奏控制本地门禁记录
+### 2026-07-15 文生图与节奏控制融合门禁
+
+- 后端 `python -m pytest`：PASS，`222 passed, 1 deselected`。
+- 文生图专项（Provider、状态机、崩溃恢复、项目删除）：PASS，`54 passed`。
+- 前端 `npm run lint`、`npx tsc --noEmit`、`npm run build`：PASS。
+- 前端 `npm run test:browser`：PASS，Chromium `48 passed`；文生图、素材打标、目标/单段时长、保存互斥和失败调用筛选在同一工作台回归通过。
+- 启动器契约：PASS，7 个场景；缺少任一时长或文生图核心端点时不会误复用旧后端。
+- 本地融合服务 `/health/ready` 为 `ready`，数据库正常，2 个 Worker 在线；本轮未执行服务器部署或公网 smoke。
+
+### 2026-07-15 历史记录：节奏控制阶段
 
 - 后端 `python -m pytest tests`：PASS，`164 passed, 1 deselected`。
 - 前端 `npm run lint`、`npx tsc --noEmit`、`npm run build`：PASS。
 - 前端 `npm run test:browser`：PASS，Chromium `38 passed`；新增覆盖目标/单段时长、40ms 真实值回显、恢复自动、旧预览失效、保存互斥、快速双击和 390px 布局。
 - 本轮只完成本地第一阶段，未执行服务器部署或公网 smoke。
 
-### 2026-07-14 最终本地门禁记录
+### 2026-07-14 历史记录：上线前阶段
 
 - 后端 `python -m pytest`：PASS，`89 passed, 1 deselected`。
 - 前端 `npm run lint`：PASS。

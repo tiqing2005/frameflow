@@ -131,7 +131,7 @@
 }
 ```
 
-分数在 `[0,1]` 范围内。`asset` 为 Asset 嵌套对象；示例中用空对象缩写。`selection.source`: `auto | manual`。
+分数在 `[0,1]` 范围内。`asset` 为 Asset 嵌套对象；示例中用空对象缩写。`selection.source`: `auto | manual | generated`。
 
 ### 2.6 列表响应
 
@@ -196,6 +196,45 @@
 }
 ```
 
+### 2.8 ImageGeneration
+
+```json
+{
+  "id": "generation-id",
+  "project_id": "project-id",
+  "segment_id": "segment-id",
+  "segment_version": 3,
+  "source": "segment_shortfall",
+  "prompt": "为绿色交通字幕生成一张城市骑行配图",
+  "name": "AI 生成 · 绿色交通",
+  "aspect_ratio": "16:9",
+  "provider": "openai-compatible",
+  "model": "gpt-image-2",
+  "status": "succeeded",
+  "progress": 100,
+  "attempt": 1,
+  "max_attempts": 2,
+  "retryable": false,
+  "error_code": null,
+  "error_message": null,
+  "content_url": "/api/v1/image-generations/generation-id/content",
+  "asset_id": null,
+  "auto_import": false,
+  "auto_select": false,
+  "created_at": "2026-07-15T08:30:00Z",
+  "started_at": "2026-07-15T08:30:01Z",
+  "finished_at": "2026-07-15T08:30:20Z",
+  "accepted_at": null,
+  "discarded_at": null,
+  "expires_at": "2026-07-18T08:30:20Z",
+  "updated_at": "2026-07-15T08:30:20Z"
+}
+```
+
+`status`: `queued | running | succeeded | failed | canceled`；`source`: `library | segment_shortfall`；`aspect_ratio`: `16:9 | 1:1 | 9:16`。
+
+`content_url` 仅在图片生成成功、文件仍可读且未丢弃时出现。`asset_id` 表示已进入素材库；`discarded_at` 表示私有草稿已丢弃。响应从不返回服务器文件路径、Provider 原始 Base64、Authorization 或第三方临时 URL。
+
 ## 3. 错误契约
 
 ```json
@@ -218,12 +257,16 @@
 | 409 | `SEGMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 版本、幂等请求或状态迁移冲突 |
 | 409 | `TIMELINE_INPUT_CONFLICT` | 批量时长请求使用了过期的时间线指纹 |
 | 409 | `ASSET_IN_USE`, `MINIMUM_ASSET_GUARD` | 素材仍被片段使用，或停用后会低于 3 个启用素材 |
+| 409 | `IMAGE_*_INVALID_STATE`, `IMAGE_NOT_RETRYABLE`, `IMAGE_ACCEPT_NOT_READY` | 文生图状态不允许当前操作 |
+| 409 | `IMAGE_DRAFT_DISCARDED`, `IMAGE_ALREADY_ACCEPTED`, `IMAGE_SEGMENT_VERSION_CONFLICT` | 草稿生命周期或关联字幕版本冲突 |
+| 410 | `IMAGE_DRAFT_DISCARDED` | 草稿记录保留，但私有图片内容已丢弃 |
 | 413 | `UPLOAD_TOO_LARGE` | 超过服务端上传限制 |
 | 422 | `VALIDATION_ERROR` | Pydantic 字段校验失败，仍尽量包装为统一格式 |
 | 422 | `TIMELINE_DURATION_INFEASIBLE`, `TIMELINE_TOO_LONG` | 目标无法满足单段边界，或超过预览总时长上限 |
 | 429 | `RATE_LIMITED` | 超过当前客户端的读/写请求速率限制 |
+| 429 | `IMAGE_QUEUE_FULL`, `IMAGE_DAILY_LIMIT_REACHED` | 文生图 pending 或过去 24 小时配额已满 |
 | 500 | `INTERNAL_ERROR` | 未预期服务端错误，不返回堆栈 |
-| 503 | `NOT_READY`, `ASR_NOT_CONFIGURED`, `AI_PROVIDER_UNAVAILABLE` | 依赖未就绪或短暂不可用 |
+| 503 | `NOT_READY`, `ASR_NOT_CONFIGURED`, `AI_PROVIDER_UNAVAILABLE`, `IMAGE_GENERATION_NOT_CONFIGURED` | 依赖未就绪、未配置或短暂不可用 |
 
 `retryable` 表示服务端对当前错误的建议，不代表客户端应无限自动重试。对有副作用的请求，前端必须结合幂等键或人工确认。
 
@@ -367,7 +410,7 @@ Response: HTTP 202
 
 ### DELETE `/api/v1/projects/{project_id}`
 
-删除项目及其从属任务、片段、推荐、选择和审计记录，返回 HTTP 204。公共素材不被删除。运行中项目的删除语义应由 UI 确认并由后端做状态校验。
+删除项目及其从属任务、片段、推荐、选择和审计记录，返回 HTTP 204。关联的排队/运行中文生图任务会被事务栅栏并删除，未入库草稿与 staging 在提交后清理，避免项目删除后继续调用模型；已经入库的全局素材保留。其他公共素材同样不被删除。运行中项目的删除语义应由 UI 确认并由后端做状态校验。
 
 ## 6. 任务
 
@@ -499,7 +542,122 @@ Body：
 
 至少提供一个字段。禁用已被 Selection 引用的素材时，服务端应拒绝或显式要求替换，不能制造悬空选择。
 
-## 9. 时间线与组合预览
+## 9. 文生图闭环
+
+所有生图请求只创建持久化后台任务，不在 API 请求内等待 Provider。真实 Key 仅由后端环境读取；默认测试和 CI 不调用付费接口。
+
+### POST `/api/v1/image-generations`
+
+请求：
+
+```json
+{
+  "prompt": "一张干净的城市夜景商业配图，蓝紫色灯光，无文字，无水印",
+  "name": "城市夜景",
+  "aspect_ratio": "16:9",
+  "segment_id": null,
+  "auto_import": false,
+  "auto_select": false
+}
+```
+
+`prompt` 为 1～2000 字符，`name` 可省略；`auto_select=true` 时必须同时设置 `auto_import=true` 并关联 `segment_id`。成功返回 HTTP 202：
+
+```json
+{
+  "generation": {},
+  "idempotent_replay": false
+}
+```
+
+建议携带 `Idempotency-Key`。相同键与相同规范化请求返回原任务，响应头 `Idempotent-Replay: true`；同一键配不同请求体返回 409 `IDEMPOTENCY_CONFLICT`。片段在首次创建后发生编辑时，相同键重放仍返回首次任务及其原 `segment_version`，不会因为读取到新版本字幕而重复付费。该 Header 当前可选，没有幂等键的重复 POST 会被视为两个用户授权的付费任务。
+
+### POST `/api/v1/segments/{segment_id}/image-generations`
+
+```json
+{
+  "prompt": null,
+  "name": null,
+  "aspect_ratio": "16:9",
+  "auto_import": false,
+  "auto_select": false
+}
+```
+
+`prompt=null` 时后端根据当前字幕、主题和关键词构造受限提示词，并保存创建时的 `segment_version`。`auto_select=true` 必须同时 `auto_import=true`；这两项只在用户本次请求明确授权时执行。返回同样的 HTTP 202 创建体和幂等响应头。
+
+### GET `/api/v1/image-generations`
+
+| Query | 默认 | 语义 |
+| --- | --- | --- |
+| `status` | 空 | `queued/running/succeeded/failed/canceled` |
+| `segment_id` | 空 | 只返回关联该字幕的任务 |
+| `include_discarded` | `false` | 是否包含已丢弃审计记录 |
+| `limit` | `50` | 1～200 |
+| `offset` | `0` | 非负偏移 |
+
+返回 `{items,total}`，`items` 为 ImageGeneration。
+
+### GET `/api/v1/image-generations/{generation_id}`
+
+返回：
+
+```json
+{
+  "generation": {},
+  "asset": null,
+  "selection": null,
+  "segment": null
+}
+```
+
+已入库或已应用时返回对应公开 Asset/Selection/Segment；不返回磁盘路径。
+
+### GET `/api/v1/image-generations/{generation_id}/content`
+
+仅成功且未丢弃的草稿可读，返回 `image/png` 和 `Cache-Control: private, no-store`。未就绪返回 409 `IMAGE_CONTENT_NOT_READY`，已丢弃返回 410 `IMAGE_DRAFT_DISCARDED`，文件异常缺失返回 404 `IMAGE_CONTENT_MISSING`。
+
+### POST `/api/v1/image-generations/{generation_id}/retry`
+
+只有 `failed` 且 `retryable=true` 的任务可显式重试。成功返回 HTTP 202 `{"generation":{}}`；其他状态返回 409 `IMAGE_RETRY_INVALID_STATE` 或 `IMAGE_NOT_RETRYABLE`。单任务最多执行 4 次，达到上限后返回 409 `IMAGE_RETRY_LIMIT_REACHED`。读超时、网关 5xx 或提交后的连接中断可能代表 Provider 已接收并计费，因此只允许人工确认重试；只有连接尚未建立和 429 才进入有界自动重试。
+
+### POST `/api/v1/image-generations/{generation_id}/cancel`
+
+queued/running 可取消，成功返回 HTTP 200 `{"generation":{}}`；重复取消幂等返回当前 canceled。成功、失败或已经入库的任务返回 409 `IMAGE_CANCEL_INVALID_STATE`。取消会推进执行代次，旧 Worker 的迟到响应不能落盘。
+
+### POST `/api/v1/image-generations/{generation_id}/accept`
+
+```json
+{
+  "name": "绿色交通配图",
+  "select_for_segment": true,
+  "expected_segment_version": 3
+}
+```
+
+生成成功后原子创建 Asset；其 tags/keywords 留空并进入现有后台 AI 标签队列，最终视觉、文本或规则来源按真实执行结果记录。`select_for_segment=true` 时必须存在关联 Segment，并校验 `expected_segment_version`，版本冲突返回 409 `IMAGE_SEGMENT_VERSION_CONFLICT` 且不创建半完成素材/选择。
+
+成功返回 HTTP 200：
+
+```json
+{
+  "generation": {},
+  "asset": {},
+  "selection": {},
+  "segment": {},
+  "idempotent_replay": false
+}
+```
+
+同一任务重复或并发 accept 返回相同 Asset，`idempotent_replay=true`，不会重复复制文件或排队标签。若图片此前只执行了 auto-import，后续仍可用 `select_for_segment=true` 把已有 Asset 应用到片段；该路径同样校验 `expected_segment_version`，不会以“已入库”为由绕过版本冲突。
+
+### DELETE `/api/v1/image-generations/{generation_id}`
+
+丢弃未接受草稿，成功或重复丢弃返回 HTTP 204。queued/running 会同时取消并栅栏迟到响应；提交成功后删除私有草稿，但保留数据库审计记录。已入库返回 409 `IMAGE_ALREADY_ACCEPTED`，需通过素材库删除 Asset。
+
+完整 Provider、文件安全、费用和验收边界见 `IMAGE_GENERATION.md`。
+
+## 10. 时间线与组合预览
 
 ### GET `/api/v1/projects/{project_id}/timeline`
 
@@ -564,7 +722,7 @@ Response: HTTP 202
 
 成功后 `output_url` 指向 `/media/previews/{project_id}/...mp4`。生成能力依赖 ffmpeg；字幕烧录取决于部署镜像中的字幕滤镜和字体支持。
 
-## 10. 运行与审计
+## 11. 运行与审计
 
 ### GET `/api/v1/runs`
 
@@ -622,7 +780,7 @@ Token 用量只使用以下三个顶层字段作为公开 API 契约：
 
 审计返回不包含 API Key、Authorization Header、服务端绝对路径或未经限制的全量 Provider 响应。
 
-## 11. 演示故障
+## 12. 演示故障
 
 ### POST `/api/v1/demo/faults/next`
 
@@ -647,12 +805,14 @@ Response：
 - `none` 清除尚未消费的故障。
 - 该接口只应在明确 Demo 环境可用，生产多用户版必须移除或受管理员权限保护。
 
-## 12. 客户端重试策略
+## 13. 客户端重试策略
 
 - GET 请求可对网络短断做有限自动重试。
 - 创建项目仅在保留同一 `Idempotency-Key` 时重试。
 - 分段 PATCH 发生 409 时不自动覆盖，而是重新加载并由用户决定。
 - 选择 PUT 是幂等 upsert，网络中断时可重发相同 `asset_id`。
 - 任务失败重试必须调用显式 `/retry`，不由前端重复创建项目。
+- 文生图创建只有在保留同一 `Idempotency-Key` 时自动重发；Provider 读超时或结果未知时由用户确认后显式 retry。
+- 文生图 accept 可安全重发；字幕版本冲突必须刷新 Segment，不能自动覆盖 Selection。
 
 数据库约束与删除语义见 `DATA_MODEL.md`，状态机与 Worker 恢复见 `ARCHITECTURE.md`。

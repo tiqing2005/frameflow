@@ -86,7 +86,7 @@ chmod 600 deploy/.env
 | `PUBLIC_SMOKE_URL` | 发布 smoke 的 HTTPS 基址 | `https://你的域名` |
 | `FRAMEFLOW_CORS_ORIGINS` | 允许的浏览器来源，逗号分隔 | `https://你的域名` |
 | `FRAMEFLOW_MAX_UPLOAD_MB` | 单文件上传上限 | `100` |
-| `FRAMEFLOW_WORKER_CONCURRENCY` | 项目、预览和素材画面识别共享的 Worker 进程数（1–16） | CPU 本地 ASR 建议 `1` |
+| `FRAMEFLOW_WORKER_CONCURRENCY` | 项目、预览和素材画面识别共享的核心 Worker 进程数（1–16）；文生图另有固定 1 个轻量进程 | CPU 本地 ASR 建议 `1` |
 | `DEMO_MODE` | 是否注册故障注入接口 | `false`，部署环境保持关闭 |
 | `DATA_VOLUME_NAME` | 持久化 `/data` 的具名卷 | `frameflow_data` |
 | `FRAMEFLOW_AUTH_ENABLED` | 启用应用内管理员登录、会话与 CSRF 防护 | `true` |
@@ -112,7 +112,14 @@ chmod 600 deploy/.env
 | `INSTALL_LOCAL_EMBEDDINGS` | 构建时安装 `sentence-transformers` 等本地向量依赖 | `false` |
 | `EMBEDDING_PROVIDER` | `auto`、`local`、`openai-compatible` 或 `none` | `auto` |
 | `FRAMEFLOW_CPUS` / `FRAMEFLOW_MEMORY_LIMIT` | 应用容器 CPU / 内存上限 | 当前专用机 `3.5` / `4g` |
-| `IMAGE_API_*` | 图像生成服务预留配置 | 当前版本尚未接入业务链路 |
+| `FRAMEFLOW_STOP_GRACE_PERIOD` | Compose 停机宽限，应不小于 `IMAGE_API_TIMEOUT + 30s` | `240s` |
+| `IMAGE_API_BASE_URL` | OpenAI-compatible 图像网关基址，代码追加 `/images/generations` | 空时功能不可用；不要提交真实网关 |
+| `IMAGE_API_KEY` | 图像生成独立服务端密钥 | 空，不继承 LLM/ASR/Vision 密钥 |
+| `IMAGE_MODEL` / `IMAGE_API_TIMEOUT` | 图像模型 ID / 单次 Provider 超时秒数 | `gpt-image-2` / `180` |
+| `IMAGE_MAX_RESPONSE_MB` / `IMAGE_MAX_OUTPUT_MB` | Base64 JSON 响应 / 解码图片硬上限 | `25` / `15` |
+| `IMAGE_MAX_PIXELS` | 完整解码后的最大总像素 | `24000000` |
+| `IMAGE_DRAFT_RETENTION_HOURS` | 未接受草稿保留时间；已入库素材不受影响 | `72` |
+| `IMAGE_DAILY_LIMIT` / `IMAGE_MAX_PENDING` | 每日生成数 / queued+running 上限；每日值 `0` 表示关闭配额 | 公网建议 `50` / `5` |
 | `BACKUP_INCLUDE_MODEL_CACHE` | 是否备份可重新下载的模型与缓存 | `false` |
 | `BACKUP_MIN_FREE_MB` | 快照卷与归档目录的额外空间余量 | `1024` |
 | `BACKUP_RETENTION_DAYS` / `BACKUP_RETENTION_COUNT` | 旧备份保留策略；`0` 关闭对应规则 | `30` / `20` |
@@ -123,7 +130,7 @@ chmod 600 deploy/.env
 bash deploy/upgrade.sh
 ```
 
-不要使用 `VITE_` 前缀保存任何密钥：Vite 构建变量会进入浏览器静态资源。`VISION_*` 只能作为 FrameFlow 容器的运行时环境变量，不得作为 Docker 构建参数。
+不要使用 `VITE_` 前缀保存任何密钥：Vite 构建变量会进入浏览器静态资源。`VISION_*` 与 `IMAGE_API_KEY` 只能作为 FrameFlow 容器的运行时环境变量，不得作为 Docker 构建参数。
 
 可随时复验完整发布链路：
 
@@ -203,6 +210,47 @@ VISION_TIMEOUT=30
 标签或关键词留空的新素材上传后会快速返回，持久化 Worker 随后处理；详情中的“AI 重新生成标签”也进入同一队列。项目处理、预览和素材画面识别共享 `FRAMEFLOW_WORKER_CONCURRENCY`，外部网关的并发与限流也应纳入压测。视觉调用只发送一张经 ffmpeg 归一化的图片画面，视频只发送一张 poster/抽取帧，不发送整段视频。启用第三方网关意味着这张画面会离开服务器；敏感素材应保持 `VISION_PROVIDER=none` 或不要上传，并事先确认供应商的数据保留、训练和合规政策。
 
 视觉未配置、超时、HTTP 错误或结果不合格时，任务按“视觉模型 → 纯文本 LLM → 本地规则”降级，仍然完成且不会把底层网关错误暴露给用户；运行记录会如实标注 `degraded` 和最终产出来源。纯文本 LLM 与规则阶段不接收画面。
+
+### 文生图与素材闭环（可选）
+
+文生图密钥与 Gemini 语义增强、素材视觉标签、ASR 完全隔离。上线前先在供应商侧轮换任何曾出现在聊天、截图或终端历史中的旧 Key，再编辑服务器 `deploy/.env`：
+
+```dotenv
+IMAGE_API_BASE_URL=https://image-gateway.example.com/v1
+IMAGE_API_KEY=
+IMAGE_MODEL=gpt-image-2
+IMAGE_API_TIMEOUT=180
+IMAGE_MAX_RESPONSE_MB=25
+IMAGE_MAX_OUTPUT_MB=15
+IMAGE_MAX_PIXELS=24000000
+IMAGE_DRAFT_RETENTION_HOURS=72
+IMAGE_DAILY_LIMIT=50
+IMAGE_MAX_PENDING=5
+FRAMEFLOW_STOP_GRACE_PERIOD=240s
+```
+
+FrameFlow 只从服务端调用 `${IMAGE_API_BASE_URL}/images/generations`，首版要求 Provider 返回 `b64_json`，不会把 Key 下发浏览器，也不会下载响应中的任意远程 URL。返回内容经过响应体、Base64、解码字节和像素上限校验，移除元数据并归一化为 PNG 后才保存。未接受草稿写入 `/data/private/image-generations`，因此容器升级与重启不会丢失；加入素材库后转入普通 Asset、备份和删除生命周期，并排队执行现有 Gemini 画面标签。
+
+`app.serve` 会在核心 Worker 池之外固定拉起并监督 1 个 `app.image_worker` 进程，Compose 只需注入上述环境变量，不应再启动第二个会与同一 SQLite 文件争抢写锁的图像容器。`FRAMEFLOW_STOP_GRACE_PERIOD` 必须不小于 `IMAGE_API_TIMEOUT + 30s`；默认 `180 + 30 < 240`，使 SIGTERM 后有时间等待已提交的付费请求完成、落 staging 或被执行代次栅栏拒绝。当前 3.5 CPU / 4 GB 服务器继续保持：
+
+```dotenv
+FRAMEFLOW_WORKER_CONCURRENCY=1
+FRAMEFLOW_CPUS=3.5
+FRAMEFLOW_MEMORY_LIMIT=4g
+FRAMEFLOW_STOP_GRACE_PERIOD=240s
+```
+
+图像 Provider 等待不会占用核心 ASR/ffmpeg 执行槽，但两个进程仍共享容器 CPU、内存、SQLite 和 `/data`。提交前应以服务器真实网络记录成功率和 p50/p95，同时检查生图并发时 ASR 延迟，不把单次结果写成 SLA。通用 HTTP 写限流不能替代付费额度；公网部署应保留有限的 `IMAGE_DAILY_LIMIT` 和 `IMAGE_MAX_PENDING`，并确认供应商单张价格、失败计费、商业授权、内容审核与数据保留条款。完整契约和验收项见 `IMAGE_GENERATION.md`。
+
+修改后执行：
+
+```bash
+chmod 600 deploy/.env
+bash deploy/upgrade.sh
+docker compose --env-file deploy/.env logs --tail=200 frameflow
+```
+
+只在人工受控环境发送一张非敏感测试图。默认 pytest、CI、smoke 和验收脚本不得调用真实付费接口。
 
 ### 阿里百炼 Paraformer 文件转写
 
