@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, Response, status
 
 from ..errors import request_id
 from ..schemas import AssetPatch
 from ..serializers import asset_dict
-from ..services import create_asset, list_assets, patch_asset
+from ..services import create_asset, delete_asset, list_assets, patch_asset
 from ._deps import SessionDep, SettingsDep
 
 router = APIRouter(prefix="/api/v1", tags=["assets"])
@@ -51,3 +51,14 @@ def post_asset(
 @router.patch("/assets/{asset_id}")
 def update_asset(asset_id: str, payload: AssetPatch, request: Request, session: SessionDep):
     return asset_dict(patch_asset(session, asset_id, payload, request_id(request)))
+
+
+@router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_asset(
+    asset_id: str,
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> Response:
+    delete_asset(session, settings, asset_id, request_id(request))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

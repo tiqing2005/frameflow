@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,6 +20,7 @@ from .config import Settings
 ASRErrorCategory = Literal["input", "transient", "configuration", "dependency"]
 REARMABLE_ASR_ERROR_CODES = {
     "ASR_OPENAI_KEY_MISSING",
+    "ASR_DASHSCOPE_KEY_MISSING",
     "ASR_PROVIDER_INVALID",
     "ASR_PROVIDER_AUTH_ERROR",
     "ASR_PROVIDER_CONFIGURATION_ERROR",
@@ -323,6 +330,174 @@ def _openai_transcribe(path: Path, mime_type: str | None, settings: Settings) ->
         ) from exc
 
 
+def create_asr_source_token(path: Path, settings: Settings) -> str:
+    if not settings.dashscope_signing_secret:
+        raise TranscriptionError(
+            "ASR_PROVIDER_CONFIGURATION_ERROR",
+            "DashScope 未配置 FRAMEFLOW_ASR_URL_SIGNING_SECRET",
+            True,
+            "configuration",
+        )
+    try:
+        relative = path.resolve().relative_to(settings.data_dir.resolve()).as_posix()
+    except ValueError as exc:
+        raise TranscriptionError(
+            "ASR_PROVIDER_CONFIGURATION_ERROR",
+            "待转写文件不在 FRAMEFLOW_DATA_DIR 内，无法生成临时访问地址",
+            True,
+            "configuration",
+        ) from exc
+    payload = json.dumps(
+        {"path": relative, "exp": int(time.time()) + settings.dashscope_url_ttl_seconds},
+        separators=(",", ":"),
+    ).encode()
+    encoded = base64.urlsafe_b64encode(payload).rstrip(b"=")
+    signature = hmac.new(
+        settings.dashscope_signing_secret.encode(), encoded, hashlib.sha256
+    ).digest()
+    return f"{encoded.decode()}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+def resolve_asr_source_token(token: str, settings: Settings) -> Path | None:
+    if not settings.dashscope_signing_secret:
+        return None
+    try:
+        encoded, signature_text = token.split(".", 1)
+        encoded_bytes = encoded.encode()
+        expected = hmac.new(
+            settings.dashscope_signing_secret.encode(), encoded_bytes, hashlib.sha256
+        ).digest()
+        supplied = base64.urlsafe_b64decode(signature_text + "=" * (-len(signature_text) % 4))
+        if not hmac.compare_digest(expected, supplied):
+            return None
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+        )
+        if int(payload["exp"]) < int(time.time()):
+            return None
+        path = (settings.data_dir / str(payload["path"])).resolve()
+        path.relative_to(settings.data_dir.resolve())
+        return path if path.is_file() else None
+    except (
+        ValueError,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        binascii.Error,
+        json.JSONDecodeError,
+    ):
+        return None
+
+
+def _dashscope_transcribe(path: Path, settings: Settings) -> tuple[str, str]:
+    if not settings.dashscope_api_key:
+        raise TranscriptionError(
+            "ASR_DASHSCOPE_KEY_MISSING",
+            "DashScope 语音识别未配置 DASHSCOPE_API_KEY",
+            True,
+            "configuration",
+        )
+    if not settings.dashscope_public_base_url:
+        raise TranscriptionError(
+            "ASR_PROVIDER_CONFIGURATION_ERROR",
+            "DashScope 需要配置公网 HTTPS 地址 FRAMEFLOW_ASR_PUBLIC_BASE_URL",
+            True,
+            "configuration",
+        )
+    token = create_asr_source_token(path, settings)
+    file_url = f"{settings.dashscope_public_base_url}/api/v1/asr/source/{token}"
+    deadline = time.monotonic() + settings.asr_timeout
+    headers = {
+        "Authorization": f"Bearer {settings.dashscope_api_key}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+    }
+    try:
+        with httpx.Client(timeout=min(30.0, settings.asr_timeout)) as client:
+            response = client.post(
+                f"{settings.dashscope_base_url}/services/audio/asr/transcription",
+                headers=headers,
+                json={"model": settings.asr_model, "input": {"file_urls": [file_url]}, "parameters": {}},
+            )
+            if response.status_code >= 400:
+                raise _provider_http_error(response)
+            try:
+                task_id = str(response.json().get("output", {}).get("task_id", "")).strip()
+            except ValueError as exc:
+                raise TranscriptionError(
+                    "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 未返回有效任务信息", True, "transient"
+                ) from exc
+            if not task_id:
+                raise TranscriptionError(
+                    "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 未返回 task_id", True, "transient"
+                )
+            result_url = ""
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                time.sleep(min(settings.dashscope_poll_seconds, max(0.0, remaining)))
+                poll = client.get(
+                    f"{settings.dashscope_base_url}/tasks/{task_id}",
+                    headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
+                )
+                if poll.status_code >= 400:
+                    raise _provider_http_error(poll)
+                try:
+                    output = poll.json().get("output", {})
+                except ValueError as exc:
+                    raise TranscriptionError(
+                        "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 任务状态无法解析", True, "transient"
+                    ) from exc
+                status = str(output.get("task_status", ""))
+                if status == "FAILED":
+                    raise TranscriptionError(
+                        "ASR_INPUT_REJECTED", "DashScope 无法识别该媒体文件", False, "input"
+                    )
+                if status == "SUCCEEDED":
+                    for item in output.get("results", []):
+                        if isinstance(item, dict):
+                            result_url = str(
+                                item.get("transcription_url")
+                                or (item.get("output") or {}).get("transcription_url")
+                                or ""
+                            )
+                            if result_url:
+                                break
+                    break
+            if not result_url:
+                raise TranscriptionError(
+                    "ASR_TIMEOUT", "DashScope 语音识别任务等待超时", True, "transient"
+                )
+            result = client.get(result_url)
+            if result.status_code >= 400:
+                raise _provider_http_error(result)
+            try:
+                payload = result.json()
+            except ValueError as exc:
+                raise TranscriptionError(
+                    "ASR_PROVIDER_RESPONSE_INVALID", "DashScope 转写结果无法解析", True, "transient"
+                ) from exc
+            text = "".join(
+                str(item.get("text", "")).strip()
+                for item in payload.get("transcripts", [])
+                if isinstance(item, dict)
+            ).strip()
+            if not text:
+                raise TranscriptionError(
+                    "ASR_NO_SPEECH", "媒体中未识别到可用语音内容", False, "input"
+                )
+            return text, f"dashscope/{settings.asr_model}"
+    except httpx.TimeoutException as exc:
+        raise TranscriptionError("ASR_TIMEOUT", "DashScope 请求超时", True, "transient") from exc
+    except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+        raise TranscriptionError(
+            "ASR_PROVIDER_CONFIGURATION_ERROR", "DashScope 服务或公网地址无效", True, "configuration"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise TranscriptionError(
+            "ASR_NETWORK_ERROR", "暂时无法连接 DashScope 语音识别服务", True, "transient"
+        ) from exc
+
+
 def transcribe_file(path: Path, mime_type: str | None, settings: Settings) -> tuple[str, str]:
     """Transcribe through an optional server-side OpenAI-compatible endpoint.
 
@@ -338,10 +513,10 @@ def transcribe_file(path: Path, mime_type: str | None, settings: Settings) -> tu
                 "SUBTITLE_ENCODING", "字幕文件需使用 UTF-8 编码", False, "input"
             ) from exc
     provider = settings.asr_provider
-    if provider not in {"auto", "local", "openai"}:
+    if provider not in {"auto", "local", "openai", "dashscope"}:
         raise TranscriptionError(
             "ASR_PROVIDER_INVALID",
-            "FRAMEFLOW_ASR_PROVIDER 仅支持 auto、local 或 openai",
+            "FRAMEFLOW_ASR_PROVIDER 仅支持 auto、local、openai 或 dashscope",
             True,
             "configuration",
         )
@@ -349,6 +524,8 @@ def transcribe_file(path: Path, mime_type: str | None, settings: Settings) -> tu
         return _run_with_timeout(lambda: _local_transcribe(path, settings), settings.local_asr_timeout)
     if provider == "openai":
         return _openai_transcribe(path, mime_type, settings)
+    if provider == "dashscope":
+        return _dashscope_transcribe(path, settings)
     if settings.openai_api_key:
         return _openai_transcribe(path, mime_type, settings)
     # In auto mode local ASR is the no-key path. If the optional dependency is

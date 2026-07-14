@@ -41,6 +41,12 @@ class Settings:
     asr_model: str = "gpt-4o-mini-transcribe"
     asr_provider: str = "auto"
     asr_timeout: float = 120.0
+    dashscope_api_key: str | None = None
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
+    dashscope_public_base_url: str | None = None
+    dashscope_signing_secret: str | None = None
+    dashscope_poll_seconds: float = 2.0
+    dashscope_url_ttl_seconds: int = 1800
     local_asr_timeout: float = 600.0
     whisper_model: str = "tiny"
     whisper_device: str = "cpu"
@@ -66,6 +72,13 @@ class Settings:
     read_rate_limit_per_minute: int = 240
     write_rate_limit_per_minute: int = 60
     frontend_dir: Path | None = None
+    auth_enabled: bool = False
+    auth_username: str = "admin"
+    auth_display_name: str = "FrameFlow 管理员"
+    auth_password_hash: str | None = None
+    auth_password: str | None = None
+    auth_session_hours: int = 12
+    auth_cookie_secure: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -105,6 +118,26 @@ class Settings:
             asr_model=os.getenv("FRAMEFLOW_ASR_MODEL", "gpt-4o-mini-transcribe"),
             asr_provider=os.getenv("FRAMEFLOW_ASR_PROVIDER", "auto").strip().lower(),
             asr_timeout=max(0.1, _float("FRAMEFLOW_ASR_TIMEOUT", 120.0)),
+            dashscope_api_key=(
+                os.getenv("DASHSCOPE_API_KEY", "").strip()
+                or os.getenv("OPENAI_API_KEY", "").strip()
+                or None
+            ),
+            dashscope_base_url=os.getenv(
+                "FRAMEFLOW_DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
+            ).rstrip("/"),
+            dashscope_public_base_url=os.getenv(
+                "FRAMEFLOW_ASR_PUBLIC_BASE_URL", ""
+            ).strip().rstrip("/") or None,
+            dashscope_signing_secret=os.getenv(
+                "FRAMEFLOW_ASR_URL_SIGNING_SECRET", ""
+            ).strip() or None,
+            dashscope_poll_seconds=max(
+                0.2, _float("FRAMEFLOW_DASHSCOPE_POLL_SECONDS", 2.0)
+            ),
+            dashscope_url_ttl_seconds=max(
+                60, _int("FRAMEFLOW_ASR_URL_TTL_SECONDS", 1800)
+            ),
             local_asr_timeout=max(0.1, _float("FRAMEFLOW_LOCAL_ASR_TIMEOUT", 600.0)),
             whisper_model=os.getenv("FRAMEFLOW_WHISPER_MODEL", "tiny").strip(),
             whisper_device=os.getenv("FRAMEFLOW_WHISPER_DEVICE", "cpu").strip(),
@@ -136,6 +169,16 @@ class Settings:
                 0, _int("FRAMEFLOW_WRITE_RATE_LIMIT_PER_MINUTE", 60)
             ),
             frontend_dir=frontend_dir,
+            auth_enabled=_bool("FRAMEFLOW_AUTH_ENABLED", False),
+            auth_username=os.getenv("FRAMEFLOW_AUTH_USERNAME", "admin").strip() or "admin",
+            auth_display_name=(
+                os.getenv("FRAMEFLOW_AUTH_DISPLAY_NAME", "FrameFlow 管理员").strip()
+                or "FrameFlow 管理员"
+            ),
+            auth_password_hash=os.getenv("FRAMEFLOW_AUTH_PASSWORD_HASH", "").strip() or None,
+            auth_password=os.getenv("FRAMEFLOW_AUTH_PASSWORD", "").strip() or None,
+            auth_session_hours=max(1, _int("FRAMEFLOW_AUTH_SESSION_HOURS", 12)),
+            auth_cookie_secure=_bool("FRAMEFLOW_AUTH_COOKIE_SECURE", False),
         )
 
     def ensure_directories(self) -> None:

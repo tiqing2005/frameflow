@@ -12,6 +12,7 @@ from .assets import (
     _parse_csv,
     _valid_asset_signature,
     create_asset,
+    delete_asset,
     list_assets,
     patch_asset,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "add_audit",
     "cancel_job",
     "create_asset",
+    "delete_asset",
     "create_text_project",
     "create_upload_project",
     "create_preview_job",

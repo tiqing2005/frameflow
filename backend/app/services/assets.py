@@ -18,6 +18,7 @@ from ..schemas import AssetPatch
 from ..serializers import asset_dict
 from ..thumbnails import ThumbnailResult, materialize_video_thumbnail
 from .common import _get_asset, add_audit, dumps, stable_hash, stream_upload_to_path
+from .projects import _delete_after_commit
 
 ASSET_EXTENSIONS = {
     ".png": "image",
@@ -261,3 +262,77 @@ def patch_asset(
         request_id=request_id,
     )
     return asset
+
+
+def delete_asset(
+    session: Session,
+    settings: Settings,
+    asset_id: str,
+    request_id: str | None,
+) -> None:
+    """Delete a user-uploaded asset and its owned media files safely.
+
+    Seed media is immutable and selected assets cannot be removed behind the
+    workbench's back.  Files are unlinked only after the database transaction
+    commits, so a failed delete never leaves the database pointing at missing
+    media.
+    """
+    if session.get_bind().dialect.name == "sqlite":
+        # Serialize with selection writes and active-asset updates.
+        session.execute(text("BEGIN IMMEDIATE"))
+    asset = _get_asset(session, asset_id)
+    if asset.is_seed:
+        raise APIError(409, "SEED_ASSET_PROTECTED", "内置演示素材不可删除，请使用用户上传的素材")
+
+    selection_count = session.scalar(
+        select(func.count()).select_from(Selection).where(Selection.asset_id == asset.id)
+    ) or 0
+    if selection_count:
+        raise APIError(
+            409,
+            "ASSET_IN_USE",
+            "该素材仍被项目片段使用，请先替换相关片段的素材",
+            details={"asset_id": asset.id, "selection_count": selection_count},
+        )
+
+    if asset.active:
+        active_count = session.scalar(
+            select(func.count()).select_from(Asset).where(Asset.active.is_(True))
+        ) or 0
+        if active_count <= MINIMUM_ACTIVE_ASSETS:
+            raise APIError(
+                409,
+                "MINIMUM_ASSET_GUARD",
+                f"至少保留 {MINIMUM_ACTIVE_ASSETS} 个启用素材",
+                details={
+                    "minimum_active_assets": MINIMUM_ACTIVE_ASSETS,
+                    "active_assets": active_count,
+                },
+            )
+
+    before = asset_dict(asset)
+    # Restrict cleanup to the upload directory.  This prevents malformed or
+    # legacy database values from turning an API request into arbitrary file
+    # deletion, while still removing both source and generated poster files.
+    upload_root = (settings.data_dir / "media" / "uploads" / "assets").resolve()
+    owned_paths: set[Path] = set()
+    for raw_path in (asset.storage_path, asset.thumbnail_storage_path):
+        if not raw_path:
+            continue
+        path = Path(raw_path).resolve(strict=False)
+        if path != upload_root and path.is_relative_to(upload_root):
+            owned_paths.add(path)
+
+    add_audit(
+        session,
+        None,
+        "asset",
+        asset.id,
+        "asset.deleted",
+        before=before,
+        request_id=request_id,
+    )
+    session.delete(asset)
+    session.flush()
+    for path in owned_paths:
+        _delete_after_commit(session, path)

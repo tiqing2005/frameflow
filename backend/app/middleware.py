@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import math
 import time
 import uuid
 from collections import defaultdict, deque
+from http.cookies import SimpleCookie
 
+from anyio import to_thread
+from sqlalchemy.orm import sessionmaker
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from .auth import COOKIE_NAME, find_session
+from .config import Settings
 
 
 class RateLimitMiddleware:
@@ -90,4 +97,113 @@ class RateLimitMiddleware:
             await send({"type": "http.response.start", "status": 429, "headers": headers})
             await send({"type": "http.response.body", "body": body})
             return
+        await self.app(scope, receive, send)
+
+
+class AuthMiddleware:
+    """Protect application APIs and media with an HttpOnly database session."""
+
+    _PUBLIC_PATHS = {
+        "/api/v1/auth/session",
+        "/api/v1/auth/login",
+        "/health/live",
+        "/health/ready",
+        "/api/v1/health/live",
+        "/api/v1/health/ready",
+    }
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        settings: Settings,
+        session_factory: sessionmaker,
+    ) -> None:
+        self.app = app
+        self.settings = settings
+        self.session_factory = session_factory
+
+    @staticmethod
+    def _cookie(scope: Scope, name: str) -> str | None:
+        for key, value in scope.get("headers", []):
+            if key.lower() != b"cookie":
+                continue
+            cookies = SimpleCookie()
+            try:
+                cookies.load(value.decode("latin-1"))
+                morsel = cookies.get(name)
+                return morsel.value if morsel else None
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _header(scope: Scope, name: bytes) -> str | None:
+        for key, value in scope.get("headers", []):
+            if key.lower() == name:
+                return value.decode("latin-1")
+        return None
+
+    @staticmethod
+    async def _reject(send: Send, *, status: int, code: str, message: str) -> None:
+        request_id = f"req_{uuid.uuid4().hex}"
+        body = json.dumps(
+            {
+                "code": code,
+                "message": message,
+                "retryable": False,
+                "request_id": request_id,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [
+                    (b"content-type", b"application/json; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                    (b"cache-control", b"no-store"),
+                    (b"x-request-id", request_id.encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    def _load_session(self, token: str | None):
+        db = self.session_factory()
+        try:
+            return find_session(db, token)
+        finally:
+            db.close()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not self.settings.auth_enabled:
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path", ""))
+        method = str(scope.get("method", "GET")).upper()
+        if (
+            method == "OPTIONS"
+            or path in self._PUBLIC_PATHS
+            or path.startswith("/api/v1/asr/source/")
+        ):
+            await self.app(scope, receive, send)
+            return
+        if not path.startswith(("/api/", "/media/")):
+            await self.app(scope, receive, send)
+            return
+
+        auth_session = await to_thread.run_sync(
+            self._load_session, self._cookie(scope, COOKIE_NAME)
+        )
+        if auth_session is None:
+            await self._reject(send, status=401, code="AUTH_REQUIRED", message="请登录后继续操作")
+            return
+        if method not in {"GET", "HEAD", "OPTIONS"}:
+            csrf = self._header(scope, b"x-csrf-token")
+            if not csrf or not hmac.compare_digest(csrf, auth_session.csrf_token):
+                await self._reject(send, status=403, code="CSRF_INVALID", message="会话校验失败，请刷新后重试")
+                return
+        scope.setdefault("state", {})["auth_username"] = auth_session.username
         await self.app(scope, receive, send)

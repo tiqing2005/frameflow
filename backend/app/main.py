@@ -11,8 +11,10 @@ from . import __version__
 from .config import Settings
 from .db import Database
 from .errors import install_error_handlers
-from .middleware import RateLimitMiddleware
+from .middleware import AuthMiddleware, RateLimitMiddleware
+from .routers.auth import router as auth_router
 from .routers.assets import router as assets_router
+from .routers.asr import router as asr_router
 from .routers.audit import router as audit_router
 from .routers.demo import router as demo_router
 from .routers.health import root_router as health_root_router
@@ -78,16 +80,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         write_per_minute=settings.write_rate_limit_per_minute,
     )
     app.add_middleware(
+        AuthMiddleware,
+        settings=settings,
+        session_factory=database.SessionLocal,
+    )
+    app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
-        allow_credentials=False,
+        allow_credentials=settings.auth_enabled,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "Idempotent-Replay"],
     )
 
     routers = [
+        auth_router,
         health_router,
+        asr_router,
         dashboard_router,
         projects_router,
         previews_router,
