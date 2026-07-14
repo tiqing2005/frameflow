@@ -27,6 +27,12 @@ def test_signed_asr_source_is_retrievable(runtime):
     response = client.get(f"/api/v1/asr/source/{token}")
     assert response.status_code == 200
     assert response.content == b"RIFF-test"
+    explicit_mp3 = client.get(f"/api/v1/asr/source/{token}/audio.mp3")
+    assert explicit_mp3.status_code == 200
+    assert explicit_mp3.content == b"RIFF-test"
+    assert explicit_mp3.headers["content-type"] == "audio/mpeg"
+    assert 'filename="audio.mp3"' in explicit_mp3.headers["content-disposition"]
+    assert client.get(f"/api/v1/asr/source/{token}/audio.wav").status_code == 404
     assert client.get(f"/api/v1/asr/source/{token}x").status_code == 404
 
 
@@ -57,7 +63,8 @@ def test_dashscope_submit_poll_and_download(runtime, monkeypatch):
         if request.url.path.endswith("/services/audio/asr/transcription"):
             body = json.loads(request.content)
             seen_url = body["input"]["file_urls"][0]
-            token = seen_url.rsplit("/", 1)[-1]
+            assert seen_url.endswith("/audio.mp3")
+            token = seen_url.rsplit("/", 2)[-2]
             prepared_path = resolve_asr_source_token(token, settings)
             assert prepared_path is not None
             assert prepared_path.parent == settings.data_dir / "private" / "asr-staging"
@@ -177,6 +184,147 @@ def _mock_dashscope_client(monkeypatch, handler) -> None:
             transport=transport, timeout=kwargs.get("timeout")
         ),
     )
+
+
+def test_dashscope_poll_retries_transient_network_errors_then_recovers(
+    runtime, monkeypatch, caplog
+):
+    _client, _worker, _database, settings = runtime
+    source = settings.data_dir / "private" / "asr-staging" / "sample.mp3"
+    _configure_dashscope(settings, source)
+    poll_attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal poll_attempts
+        if request.url.path.endswith("/services/audio/asr/transcription"):
+            return httpx.Response(
+                200,
+                json={
+                    "request_id": "request-submit",
+                    "output": {"task_id": "task-retry"},
+                },
+            )
+        if request.url.path.endswith("/tasks/task-retry"):
+            poll_attempts += 1
+            if poll_attempts == 1:
+                raise httpx.ReadTimeout("temporary timeout", request=request)
+            if poll_attempts == 2:
+                raise httpx.ConnectError("temporary disconnect", request=request)
+            if poll_attempts == 3:
+                return httpx.Response(
+                    200,
+                    json={"output": {"task_status": "RUNNING"}},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "task_status": "SUCCEEDED",
+                        "results": [
+                            {"transcription_url": "https://result.test/final.json"}
+                        ],
+                    }
+                },
+            )
+        if request.url.host == "result.test":
+            return httpx.Response(
+                200,
+                json={"transcripts": [{"text": "transient errors recovered"}]},
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _mock_dashscope_client(monkeypatch, handler)
+    monkeypatch.setattr("app.asr.time.sleep", sleeps.append)
+    caplog.set_level("WARNING", logger="app.asr")
+
+    text, provider = _dashscope_submit_and_wait(source, settings)
+
+    assert text == "transient errors recovered"
+    assert provider == "dashscope/paraformer-v2"
+    assert poll_attempts == 4
+    assert sleeps == pytest.approx([0.01, 0.25, 0.5, 0.01])
+    retry_records = [
+        record for record in caplog.records if "event=dashscope_asr_poll_retry" in record.message
+    ]
+    assert len(retry_records) == 2
+    assert "attempt=1" in retry_records[0].message
+    assert "error_type=ReadTimeout" in retry_records[0].message
+    assert "attempt=2" in retry_records[1].message
+    assert "error_type=ConnectError" in retry_records[1].message
+
+
+def test_dashscope_poll_network_retries_stop_at_total_deadline(runtime, monkeypatch):
+    _client, _worker, _database, settings = runtime
+    source = settings.data_dir / "private" / "asr-staging" / "sample.mp3"
+    _configure_dashscope(settings, source)
+    settings.asr_timeout = 1
+    settings.dashscope_poll_seconds = 0.1
+    poll_attempts = 0
+    clock = {"now": 0.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal poll_attempts
+        if request.url.path.endswith("/services/audio/asr/transcription"):
+            return httpx.Response(200, json={"output": {"task_id": "task-deadline"}})
+        poll_attempts += 1
+        raise httpx.ConnectError("network remains unavailable", request=request)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+    monkeypatch.setattr("app.asr.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "app.asr.time.sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    monkeypatch.setattr(
+        "app.asr.httpx.Client",
+        lambda *args, **kwargs: real_client(
+            transport=transport, timeout=kwargs.get("timeout")
+        ),
+    )
+
+    with pytest.raises(TranscriptionError) as captured:
+        _dashscope_submit_and_wait(source, settings)
+
+    assert captured.value.code == "ASR_TIMEOUT"
+    assert captured.value.category == "transient"
+    assert poll_attempts == 3
+    assert clock["now"] == pytest.approx(settings.asr_timeout)
+
+
+def test_dashscope_result_download_network_error_is_not_retried(runtime, monkeypatch):
+    _client, _worker, _database, settings = runtime
+    source = settings.data_dir / "private" / "asr-staging" / "sample.mp3"
+    _configure_dashscope(settings, source)
+    result_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal result_attempts
+        if request.url.path.endswith("/services/audio/asr/transcription"):
+            return httpx.Response(200, json={"output": {"task_id": "task-result"}})
+        if request.url.path.endswith("/tasks/task-result"):
+            return httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "task_status": "SUCCEEDED",
+                        "results": [
+                            {"transcription_url": "https://result.test/final.json"}
+                        ],
+                    }
+                },
+            )
+        result_attempts += 1
+        raise httpx.ConnectError("result host unavailable", request=request)
+
+    _mock_dashscope_client(monkeypatch, handler)
+
+    with pytest.raises(TranscriptionError) as captured:
+        _dashscope_submit_and_wait(source, settings)
+
+    assert captured.value.code == "ASR_NETWORK_ERROR"
+    assert result_attempts == 1
 
 
 def test_dashscope_download_failure_is_retryable_and_preserves_provider_detail(

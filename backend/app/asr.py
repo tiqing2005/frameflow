@@ -585,6 +585,18 @@ def _dashscope_request_timeout(deadline: float, phase: str) -> float:
     return max(0.001, min(30.0, remaining))
 
 
+def _dashscope_poll_retry_delay(
+    consecutive_failures: int,
+    poll_seconds: float,
+    remaining: float,
+) -> float:
+    """Bound poll retries by both an exponential cap and the task deadline."""
+
+    base_delay = max(0.25, min(1.0, poll_seconds))
+    exponent = min(max(0, consecutive_failures - 1), 5)
+    return max(0.0, min(5.0, base_delay * (2**exponent), remaining))
+
+
 def _dashscope_failure(
     payload: dict[str, Any],
     output: dict[str, Any],
@@ -681,7 +693,11 @@ def _dashscope_failure(
 
 def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str]:
     token = create_asr_source_token(path, settings)
-    file_url = f"{settings.dashscope_public_base_url}/api/v1/asr/source/{token}"
+    # DashScope examples always expose a media filename in the URL. Keep the
+    # signed token in its own path segment and provide an explicit MP3 suffix
+    # so provider-side downloaders can determine the format from both the URL
+    # and response headers.
+    file_url = f"{settings.dashscope_public_base_url}/api/v1/asr/source/{token}/audio.mp3"
     deadline = time.monotonic() + settings.asr_timeout
     headers = {
         "Authorization": f"Bearer {settings.dashscope_api_key}",
@@ -715,17 +731,52 @@ def _dashscope_submit_and_wait(path: Path, settings: Settings) -> tuple[str, str
             )
             result_url = ""
             last_status = ""
+            consecutive_poll_failures = 0
+            next_poll_delay = settings.dashscope_poll_seconds
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
-                time.sleep(min(settings.dashscope_poll_seconds, max(0.0, remaining)))
+                time.sleep(min(next_poll_delay, max(0.0, remaining)))
                 if time.monotonic() >= deadline:
                     break
                 phase = "查询任务状态"
-                poll = client.get(
-                    f"{settings.dashscope_base_url}/tasks/{task_id}",
-                    headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
-                    timeout=_dashscope_request_timeout(deadline, phase),
-                )
+                try:
+                    poll = client.get(
+                        f"{settings.dashscope_base_url}/tasks/{task_id}",
+                        headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
+                        timeout=_dashscope_request_timeout(deadline, phase),
+                    )
+                except httpx.RequestError as exc:
+                    consecutive_poll_failures += 1
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if remaining <= 0:
+                        logger.warning(
+                            "event=dashscope_asr_poll_deadline task_id=%s "
+                            "request_id=%s attempt=%s error_type=%s",
+                            task_id,
+                            request_id or "-",
+                            consecutive_poll_failures,
+                            type(exc).__name__,
+                        )
+                        break
+                    next_poll_delay = _dashscope_poll_retry_delay(
+                        consecutive_poll_failures,
+                        settings.dashscope_poll_seconds,
+                        remaining,
+                    )
+                    logger.warning(
+                        "event=dashscope_asr_poll_retry task_id=%s request_id=%s "
+                        "attempt=%s error_type=%s retry_in_seconds=%.3f "
+                        "remaining_seconds=%.3f",
+                        task_id,
+                        request_id or "-",
+                        consecutive_poll_failures,
+                        type(exc).__name__,
+                        next_poll_delay,
+                        remaining,
+                    )
+                    continue
+                consecutive_poll_failures = 0
+                next_poll_delay = settings.dashscope_poll_seconds
                 if poll.status_code >= 400:
                     if poll.status_code == 404:
                         raise TranscriptionError(
