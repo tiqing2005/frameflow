@@ -37,8 +37,8 @@ def _require_live():
         pytest.skip("LLM_API_KEY 未配置，跳过 LLM 真实连通性测试")
 
 
-def test_deepseek_returns_segments_without_degradation():
-    """A configured DeepSeek-compatible provider must return real segments.
+def test_configured_llm_returns_segments_without_degradation():
+    """A configured OpenAI-compatible provider must return real segments.
 
     Guards against silent degradation: if the model name, json_schema support,
     or connectivity is broken, ``enhance_semantic_segments`` currently swallows
@@ -46,7 +46,12 @@ def test_deepseek_returns_segments_without_degradation():
     case so the operator fixes the provider before demoing.
     """
     settings = Settings.from_env()
-    assert settings.llm_provider in {"openai", "openai-compatible", "deepseek"}, (
+    assert settings.llm_provider in {
+        "openai",
+        "openai-compatible",
+        "deepseek",
+        "gemini",
+    }, (
         f"LLM_PROVIDER 当前为 {settings.llm_provider!r}，无法验证 LLM 真实路径"
     )
     result = enhance_semantic_segments(_TRANSCRIPT, settings)

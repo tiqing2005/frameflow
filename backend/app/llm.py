@@ -137,8 +137,35 @@ class AssetTags(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    tags: list[str] = Field(min_length=0, max_length=6)
-    keywords: list[str] = Field(min_length=0, max_length=8)
+    tags: list[str] = Field(min_length=1, max_length=6)
+    keywords: list[str] = Field(min_length=1, max_length=8)
+
+    @field_validator("tags", "keywords", mode="before")
+    @classmethod
+    def normalize_labels(cls, value: object, info) -> object:
+        """Normalize provider output while retaining strict input types.
+
+        Models occasionally repeat labels or exceed a requested character or
+        item limit. Those are safe to normalize deterministically; non-string
+        values and an empty normalized result remain schema failures.
+        """
+        if not isinstance(value, list):
+            return value
+        limit = 6 if info.field_name == "tags" else 8
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("asset labels must be strings")
+            label = " ".join(item.split())[:20].strip()
+            identity = label.casefold()
+            if not label or identity in seen:
+                continue
+            seen.add(identity)
+            normalized.append(label)
+            if len(normalized) == limit:
+                break
+        return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,10 +192,22 @@ def suggest_asset_tags_detailed(
     """
     started = time.perf_counter()
     configured = settings.llm_provider
-    if configured in {"", "rules", "off", "disabled"} or not settings.llm_api_key:
+    if configured in {"", "rules", "off", "disabled"}:
         return AssetTagSuggestion(
             [], [], "rules", "rule-keywords-v1", "degraded", True, 0,
             "LLM 未启用，使用规则关键词回退", {},
+        )
+    if not settings.llm_api_key:
+        return AssetTagSuggestion(
+            [],
+            [],
+            configured,
+            settings.llm_model,
+            "degraded",
+            True,
+            0,
+            "LLM_API_KEY 未配置，已使用规则关键词回退",
+            {},
         )
     schema = AssetTags.model_json_schema()
     payload = {
@@ -222,9 +261,23 @@ def suggest_asset_tags_detailed(
             usage=usage,
         )
     except Exception as exc:
-        message = f"{type(exc).__name__}: {exc}"
-        if settings.llm_api_key:
-            message = message.replace(settings.llm_api_key, "[REDACTED]")
+        # Never persist exception text here. httpx errors can contain the full
+        # request URL, Authorization-related provider bodies, local paths, or
+        # other customer data. A fixed category plus an HTTP status is enough
+        # for honest degraded observability without leaking secrets.
+        if isinstance(exc, httpx.TimeoutException):
+            message = "文本标签模型请求超时，已转入规则降级流程"
+        elif isinstance(exc, httpx.HTTPStatusError):
+            message = f"文本标签模型请求失败（HTTP {exc.response.status_code}），已转入规则降级流程"
+        elif isinstance(exc, httpx.RequestError):
+            message = "文本标签模型网络请求失败，已转入规则降级流程"
+        elif isinstance(
+            exc,
+            (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError, ValidationError),
+        ):
+            message = "文本标签模型返回格式无效，已转入规则降级流程"
+        else:
+            message = "文本标签模型处理失败，已转入规则降级流程"
         return AssetTagSuggestion(
             [],
             [],
@@ -233,7 +286,7 @@ def suggest_asset_tags_detailed(
             "degraded",
             True,
             max(0, int((time.perf_counter() - started) * 1_000)),
-            message[:500],
+            message,
             {},
         )
 
@@ -264,7 +317,7 @@ def enhance_semantic_segments(
     configured = settings.llm_provider
     if configured in {"", "rules", "off", "disabled"}:
         return SemanticEnhancement(fallback, "rules", "rule-nlp-v1", False, "succeeded", 0, usage={})
-    if configured not in {"openai", "openai-compatible", "deepseek"}:
+    if configured not in {"openai", "openai-compatible", "deepseek", "gemini"}:
         return SemanticEnhancement(
             fallback,
             configured,
@@ -277,7 +330,7 @@ def enhance_semantic_segments(
     if not settings.llm_api_key and provider is None:
         return SemanticEnhancement(
             fallback,
-            "openai-compatible",
+            configured,
             settings.llm_model,
             True,
             "degraded",

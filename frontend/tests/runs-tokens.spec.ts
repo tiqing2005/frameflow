@@ -62,6 +62,7 @@ test('Token 总计使用规范字段并忽略无 Token 的规则记录', async (
 
   await page.getByRole('button', { name: /规则匹配/ }).click()
   await expect(page.locator('.run-detail').getByText('未产生 Token')).toBeVisible()
+  await expect(page.locator('.run-detail').getByText('降级完成', { exact: true })).toBeVisible()
   await expect(page.locator('.run-detail')).not.toContainText('0 输入')
 })
 
@@ -137,4 +138,37 @@ test('运行记录明确展示 DashScope 转写和 DeepSeek 语义增强', async
   await expect(semanticRun).toContainText('DeepSeek · DeepSeek-V4-Pro')
   await semanticRun.locator('.run-summary').click()
   await expect(semanticRun.locator('.run-detail')).toContainText('DeepSeek-V4-Pro / DeepSeek')
+})
+
+test('运行记录根据提供方或模型识别 Google Gemini', async ({ page }) => {
+  await mockRuns(page, [
+    {
+      id: 'gemini-provider-run',
+      operation: 'semantic_segmentation',
+      provider: 'gemini',
+      model: 'flash-provider-preview',
+      status: 'succeeded',
+      created_at: createdAt,
+    },
+    {
+      id: 'gemini-model-run',
+      operation: 'semantic_segmentation',
+      provider: 'openai-compatible',
+      model: 'gemini-3.1-flash-lite-preview',
+      status: 'succeeded',
+      created_at: createdAt,
+    },
+  ])
+
+  await page.goto('/runs')
+
+  const providerRun = page.locator('.run-row').filter({ hasText: 'flash-provider-preview' })
+  await expect(providerRun).toContainText('Google Gemini · flash-provider-preview')
+  await providerRun.locator('.run-summary').click()
+  await expect(providerRun.locator('.run-detail')).toContainText('flash-provider-preview / Google Gemini')
+
+  const modelRun = page.locator('.run-row').filter({ hasText: 'gemini-3.1-flash-lite-preview' })
+  await expect(modelRun).toContainText('Google Gemini · gemini-3.1-flash-lite-preview')
+  await modelRun.locator('.run-summary').click()
+  await expect(modelRun.locator('.run-detail')).toContainText('gemini-3.1-flash-lite-preview / Google Gemini')
 })

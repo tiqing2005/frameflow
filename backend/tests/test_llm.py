@@ -81,6 +81,88 @@ def test_builtin_deepseek_transport_retains_vendor_in_trace(tmp_path, monkeypatc
     assert result.model == "DeepSeek-V4-Pro"
 
 
+def test_builtin_gemini_uses_compatible_transport_and_retains_vendor_in_trace(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "segments": [
+                                        {
+                                            "text": TEXT,
+                                            "topic": "智能与安全",
+                                            "keywords": ["人工智能", "数据安全", "用户隐私"],
+                                        }
+                                    ]
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+
+    def fake_post(endpoint, headers=None, json=None, timeout=None):
+        captured["endpoint"] = endpoint
+        captured["authorization"] = headers["Authorization"]
+        captured["model"] = json["model"]
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = enhance_semantic_segments(
+        TEXT,
+        settings(
+            tmp_path,
+            llm_provider="gemini",
+            llm_base_url="https://gemini-gateway.example.invalid/v1",
+            llm_model="gemini-3.1-flash-lite-preview",
+        ),
+    )
+
+    assert result.degraded is False
+    assert result.provider == "gemini"
+    assert result.model == "gemini-3.1-flash-lite-preview"
+    assert captured == {
+        "endpoint": "https://gemini-gateway.example.invalid/v1/chat/completions",
+        "authorization": "Bearer test-secret-key",
+        "model": "gemini-3.1-flash-lite-preview",
+        "timeout": 0.2,
+    }
+
+
+def test_gemini_without_api_key_degrades_with_vendor_trace(tmp_path, monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("缺少 API Key 时不应发起模型请求")
+
+    monkeypatch.setattr(httpx, "post", fail_if_called)
+
+    result = enhance_semantic_segments(
+        TEXT,
+        settings(
+            tmp_path,
+            llm_provider="gemini",
+            llm_api_key=None,
+            llm_model="gemini-3.1-flash-lite-preview",
+        ),
+    )
+
+    assert result.degraded is True
+    assert result.provider == "gemini"
+    assert result.model == "gemini-3.1-flash-lite-preview"
+    assert "LLM_API_KEY 未配置" in result.error_message
+
+
 def test_invalid_json_schema_response_degrades_to_rules(tmp_path, monkeypatch):
     class FakeResponse:
         def raise_for_status(self):
@@ -185,6 +267,26 @@ def test_suggest_asset_tags_returns_empty_when_rules(tmp_path):
 
     s = settings(tmp_path, llm_provider="rules")
     assert suggest_asset_tags("城市夜景", "", s) == ([], [])
+
+
+def test_suggest_asset_tags_without_key_retains_configured_vendor(tmp_path):
+    from app.llm import suggest_asset_tags_detailed
+
+    result = suggest_asset_tags_detailed(
+        "城市夜景",
+        "",
+        settings(
+            tmp_path,
+            llm_provider="gemini",
+            llm_api_key=None,
+            llm_model="gemini-3.1-flash-lite-preview",
+        ),
+    )
+
+    assert result.degraded is True
+    assert result.provider == "gemini"
+    assert result.model == "gemini-3.1-flash-lite-preview"
+    assert "LLM_API_KEY 未配置" in result.error_message
 
 
 def test_suggest_asset_tags_returns_tags_on_success(tmp_path, monkeypatch):

@@ -35,6 +35,7 @@ function providerLabel(run: Run) {
   const provider = (run.provider || '').toLowerCase()
   const model = (run.model || '').toLowerCase()
   if (provider.includes('dashscope')) return '阿里云百炼 DashScope'
+  if (provider.includes('gemini') || model.includes('gemini')) return 'Google Gemini'
   if (provider.includes('deepseek') || model.includes('deepseek')) return 'DeepSeek'
   if (provider === 'openai-compatible') return 'OpenAI-compatible API'
   if (provider === 'rules') return '确定性规则'
@@ -46,7 +47,7 @@ function providerLabel(run: Run) {
 
 function modelTraceLabel(run: Run) {
   const provider = providerLabel(run)
-  if (run.degraded) return provider ? `${provider} · 规则降级` : '确定性规则降级'
+  if (run.degraded) return provider ? `${provider} · 降级完成` : '降级完成'
   if (provider && run.model && provider !== run.model) return `${provider} · ${run.model}`
   return run.model || provider || 'AI model'
 }
@@ -84,7 +85,7 @@ export function RunsPage() {
   return (
     <main className="page runs-page">
       <div className="page-heading-row compact-heading">
-        <div><span className="eyebrow"><Bot size={14} /> 可观测 AI 管线</span><h1>AI 运行记录</h1><p>查看每次模型调用、规则降级、耗时与错误，确保处理过程可追踪。</p></div>
+        <div><span className="eyebrow"><Bot size={14} /> 可观测 AI 管线</span><h1>AI 运行记录</h1><p>查看每次模型调用、降级处理、耗时与错误，确保处理过程可追踪。</p></div>
         <button type="button" className="button button-secondary heading-action" disabled={loading} onClick={() => void load(true)}><RefreshCw size={16} className={loading ? 'spin' : ''} /> 刷新</button>
       </div>
       {error && <ErrorState message={error} onRetry={() => void load()} compact />}
@@ -92,11 +93,11 @@ export function RunsPage() {
         <div className="metric-card"><div className="metric-icon green"><CheckCircle2 size={20} /></div><div><span>成功调用</span><strong>{summary.successful}</strong><small>共 {runs.length} 条运行</small></div></div>
         <div className="metric-card"><div className="metric-icon blue"><Gauge size={20} /></div><div><span>平均耗时</span><strong>{summary.average ? `${(summary.average / 1000).toFixed(1)}s` : '—'}</strong><small>端到端模型延迟</small></div></div>
         <div className="metric-card"><div className="metric-icon purple"><Zap size={20} /></div><div><span>Token 用量</span><strong>{summary.tokens == null ? '—' : summary.tokens.toLocaleString()}</strong><small>输入与输出合计</small></div></div>
-        <div className="metric-card"><div className="metric-icon amber"><AlertTriangle size={20} /></div><div><span>规则降级</span><strong>{summary.degraded}</strong><small>结果仍可确定性复现</small></div></div>
+        <div className="metric-card"><div className="metric-icon amber"><AlertTriangle size={20} /></div><div><span>降级完成</span><strong>{summary.degraded}</strong><small>首选能力不可用时的可用结果</small></div></div>
       </section>
       <section className="section-block">
         <div className="section-heading"><div><h2>调用明细</h2><p>最近的记录显示在最前</p></div><span className="result-count">{runs.length} 条</span></div>
-        {runs.length === 0 ? <EmptyState icon={<Cpu size={26} />} title="还没有 AI 运行记录" description="创建一个项目后，模型调用或规则降级会记录在这里。" /> : (
+        {runs.length === 0 ? <EmptyState icon={<Cpu size={26} />} title="还没有 AI 运行记录" description="创建一个项目后，模型调用或降级处理会记录在这里。" /> : (
           <div className="run-list">
             {runs.map((run) => {
               const isSuccess = run.status === 'success' || run.status === 'succeeded'
@@ -111,8 +112,8 @@ export function RunsPage() {
                   <ChevronDown size={16} className={open ? 'rotated' : ''} />
                 </button>
                 {open && <div className="run-detail">
-                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '规则降级成功' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {providerLabel(run) || '—'}</strong></div><div><span>Token</span><strong>{formatRunTokenUsage(run)}</strong></div>
-                  {(run.error_message || run.degraded) && <p className="run-message"><AlertTriangle size={15} /> {run.error_message || '模型调用不可用，本次使用确定性规则完成，所有结果仍已正常持久化。'}</p>}
+                  <div><span>运行 ID</span><code>{run.id}</code></div><div><span>状态</span><strong>{run.degraded ? '降级完成' : isSuccess ? '调用成功' : run.status || '未知'}</strong></div><div><span>模型 / 提供方</span><strong>{run.model || '—'} / {providerLabel(run) || '—'}</strong></div><div><span>Token</span><strong>{formatRunTokenUsage(run)}</strong></div>
+                  {(run.error_message || run.degraded) && <p className="run-message"><AlertTriangle size={15} /> {run.error_message || '首选模型能力暂不可用，本次已通过备用能力完成，结果已正常持久化。'}</p>}
                 </div>}
               </article>
             })}
