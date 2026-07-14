@@ -113,6 +113,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }, options),
+  setupAuth: (username: string, displayName: string, password: string, options?: ApiCallOptions) =>
+    request<AuthSessionInfo>('/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ username, display_name: displayName, password }),
+    }, options),
   logout: (options?: ApiCallOptions) => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }, options),
   dashboard: (options?: ApiCallOptions) => request<Dashboard>('/dashboard', {}, options),
   projects: (options?: ApiCallOptions) => request<Paged<Project> | Project[]>('/projects', {}, options).then((data) =>

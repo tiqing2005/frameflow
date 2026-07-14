@@ -27,6 +27,8 @@ export interface AuthUser {
 export interface AuthSessionInfo {
   auth_enabled: boolean
   configured: boolean
+  setup_required: boolean
+  setup_available: boolean
   authenticated: boolean
   user: AuthUser | null
   csrf_token: string | null

@@ -8,18 +8,12 @@ interface AuthContextValue {
   loading: boolean
   error: string | null
   login: (username: string, password: string) => Promise<void>
+  setup: (username: string, displayName: string, password: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
-const disabledSession: AuthSessionInfo = {
-  auth_enabled: false,
-  configured: false,
-  authenticated: true,
-  user: null,
-  csrf_token: null,
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AuthSessionInfo | null>(null)
@@ -36,12 +30,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       applySession(await api.authSession())
     } catch (reason) {
-      // Compatibility with an older/mock API that predates application auth.
-      if (reason instanceof ApiError && reason.status === 404) applySession(disabledSession)
-      else {
-        setSession(null)
-        setError(reason instanceof Error ? reason.message : '无法确认登录状态')
-      }
+      // Authentication must fail closed. Silently treating an old API as
+      // "auth disabled" would expose the workspace when services are stale.
+      setCsrfToken(null)
+      setSession(null)
+      setError(
+        reason instanceof ApiError && reason.status === 404
+          ? '当前后端版本不支持安全登录，请关闭旧服务后重新启动 FrameFlow'
+          : reason instanceof Error ? reason.message : '无法确认登录状态',
+      )
     } finally {
       setLoading(false)
     }
@@ -61,6 +58,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applySession(await api.login(username, password))
   }, [applySession])
 
+  const setup = useCallback(async (username: string, displayName: string, password: string) => {
+    applySession(await api.setupAuth(username, displayName, password))
+  }, [applySession])
+
   const logout = useCallback(async () => {
     try {
       await api.logout()
@@ -71,7 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ session, loading, error, login, logout, refresh }}>
+    <AuthContext.Provider value={{ session, loading, error, login, setup, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   )

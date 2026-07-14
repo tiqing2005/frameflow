@@ -104,8 +104,10 @@ class AuthMiddleware:
     """Protect application APIs and media with an HttpOnly database session."""
 
     _PUBLIC_PATHS = {
+        "/api/openapi.json",
         "/api/v1/auth/session",
         "/api/v1/auth/login",
+        "/api/v1/auth/setup",
         "/health/live",
         "/health/ready",
         "/api/v1/health/live",

@@ -300,6 +300,26 @@ class WorkerHeartbeat(Base):
     status_detail: Mapped[str | None] = mapped_column(Text)
 
 
+class AuthIdentity(Base):
+    """The single local workspace administrator created during first-run setup.
+
+    Environment-provided credentials remain supported for managed deployments.
+    This row gives a fresh local checkout a secure setup flow without shipping a
+    default password or asking the evaluator to edit an environment file.
+    """
+
+    __tablename__ = "auth_identities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    username: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
 class AuthSession(Base):
     __tablename__ = "auth_sessions"
 

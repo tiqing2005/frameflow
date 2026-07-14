@@ -73,6 +73,7 @@ class Settings:
     write_rate_limit_per_minute: int = 60
     frontend_dir: Path | None = None
     auth_enabled: bool = False
+    auth_local_setup_enabled: bool = True
     auth_username: str = "admin"
     auth_display_name: str = "FrameFlow 管理员"
     auth_password_hash: str | None = None
@@ -169,7 +170,10 @@ class Settings:
                 0, _int("FRAMEFLOW_WRITE_RATE_LIMIT_PER_MINUTE", 60)
             ),
             frontend_dir=frontend_dir,
-            auth_enabled=_bool("FRAMEFLOW_AUTH_ENABLED", False),
+            # The packaged/local application is secure by default. A fresh
+            # database is initialized through the loopback-only first-run UI.
+            auth_enabled=_bool("FRAMEFLOW_AUTH_ENABLED", True),
+            auth_local_setup_enabled=_bool("FRAMEFLOW_AUTH_LOCAL_SETUP_ENABLED", True),
             auth_username=os.getenv("FRAMEFLOW_AUTH_USERNAME", "admin").strip() or "admin",
             auth_display_name=(
                 os.getenv("FRAMEFLOW_AUTH_DISPLAY_NAME", "FrameFlow 管理员").strip()
