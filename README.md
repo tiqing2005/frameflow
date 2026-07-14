@@ -1,16 +1,42 @@
-# FrameFlow AI
+# FrameFlow
 
-[公开源码仓库](https://github.com/tiqing2005/frameflow) · 中文优先的字幕语义分段与可解释素材匹配工作台
+[![FrameFlow CI](https://github.com/tiqing2005/frameflow/actions/workflows/ci.yml/badge.svg)](https://github.com/tiqing2005/frameflow/actions/workflows/ci.yml)
 
-FrameFlow 把文本、音频或视频输入转成持久化异步任务，生成语义片段，为每个片段给出至少 3 个带分项得分和中文理由的素材候选，并允许人工编辑字幕、拖动排序、搜索替换素材。系统还能把最终选择组织成可视化时间线，并异步生成带匹配素材的 MP4 组合预览。应用内管理员登录保护工作台写操作，用户上传且未被引用的素材可安全删除；页面刷新后，任务进度、最终选择、预览结果、AI/规则运行记录和审计记录仍然存在。
+[公开源码仓库](https://github.com/tiqing2005/frameflow) · 中文优先、AI 辅助的字幕语义分段与可解释素材匹配工作台
+
+FrameFlow 把文本、音频或视频输入转成持久化异步任务，生成语义片段，为每个片段给出至少 3 个带分项得分和中文理由的素材候选，并允许人工编辑字幕、拖动排序、搜索替换素材。系统还能把最终选择组织成可视化时间线，并异步生成带匹配素材的 MP4 组合预览。应用内管理员登录保护工作台写操作，用户上传且未被引用的素材可安全删除；页面刷新后，任务进度、最终选择、预览结果、运行记录中的 AI/规则来源和审计记录仍然存在。
 
 ## 产品界面
 
-![FrameFlow 项目台](docs/images/dashboard.png)
+新版界面使用深色侧栏和橙色强调色。工作区导航统一为“项目 / 素材库 / 运行记录”，系统工具集中在“演示工具”；项目总览可查看素材与任务状态，创建项目时可选择文本、音频或视频输入，再进入工作台完成分段、候选比较、人工调整和组合预览。
 
-![FrameFlow 三栏字幕配镜工作台](docs/images/workbench.png)
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="FrameFlow 项目总览" width="900">
+</p>
+<p align="center"><sub>项目总览：统计项目、素材和任务状态，并继续最近编辑。</sub></p>
 
-移动端使用“字幕 / 编辑 / 候选”工作区切换，完整截图见 [移动端工作台](docs/images/workbench-mobile.png)。
+<p align="center">
+  <img src="docs/images/workbench.png" alt="FrameFlow 字幕与素材匹配工作台" width="900">
+</p>
+<p align="center"><sub>项目工作台：检查语义片段、比较可解释候选、调整字幕与素材选择。</sub></p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/new-project.png" alt="FrameFlow 新建项目" width="100%">
+      <p align="center"><sub>新建项目</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/assets.png" alt="FrameFlow 素材库" width="100%">
+      <p align="center"><sub>素材库</sub></p>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/workbench-mobile.png" alt="FrameFlow 移动端工作台" width="320">
+</p>
+<p align="center"><sub>移动端工作台会把同一编辑流程压缩为适合窄屏操作的分区视图。</sub></p>
 
 ## 核心亮点
 
@@ -161,7 +187,7 @@ pip install -r backend/requirements-embeddings-local.txt
 5. 上传一份测试素材，展示自动元数据建议、编辑和安全删除；同时说明种子/已引用素材不能删除。
 6. 注入 `ai_degrade`，展示规则接管与运行记录中的降级标识。
 7. 注入 `job_fail`，展示失败原因、可重试判断与成功恢复。
-8. 打开 AI 运行记录、审计记录、健康检查和公开 Git 提交历史。
+8. 打开运行记录，核对 AI/规则来源、审计记录、健康检查和公开 Git 提交历史。
 
 详细讲稿见 [演示脚本](docs/DEMO_SCRIPT.md) 和 [面试问答](docs/INTERVIEW_QA.md)。
 

@@ -136,13 +136,13 @@ frontend/src/
 ├─ api.ts                     # 唯一 fetch 边界、ApiError、资源 API
 ├─ types.ts                   # 与 API 契约对齐的 TypeScript 类型
 ├─ pages/
-│  ├─ DashboardPage.tsx       # 项目台
+│  ├─ DashboardPage.tsx       # “项目”总览、指标与最近项目
 │  ├─ NewProjectPage.tsx      # 文本/文件新建
 │  ├─ ProcessingPage.tsx      # 持久化任务进度、失败与重试
 │  ├─ WorkbenchPage.tsx       # 字幕编辑/排序、快速替换、时间线与预览播放
 │  ├─ AssetsPage.tsx          # 素材库与上传
-│  ├─ RunsPage.tsx            # AI/匹配运行记录
-│  └─ DemoLabPage.tsx         # 一次性故障注入
+│  ├─ RunsPage.tsx            # 侧栏“运行记录”对应的 AI/匹配追溯页
+│  └─ DemoPage.tsx            # 侧栏“演示工具”对应的一次性故障注入页
 ├─ components/
 │  ├─ ui.tsx                  # 精简的基础组件/图标、骨架、Toast
 │  ├─ SegmentList.tsx         # 如页面过大时抽离

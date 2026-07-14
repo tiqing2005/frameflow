@@ -108,13 +108,14 @@ jobs:
           export CADDY_DATA_VOLUME_NAME="frameflow_caddy_data_ci_${GITHUB_RUN_ID}"
           export CADDY_CONFIG_VOLUME_NAME="frameflow_caddy_config_ci_${GITHUB_RUN_ID}"
           cleanup() {
+            docker compose --env-file deploy/.env.example ps 2>/dev/null || true
             docker compose --env-file deploy/.env.example logs --tail=200 frameflow caddy 2>/dev/null || true
             docker compose --env-file deploy/.env.example down -v --remove-orphans 2>/dev/null || true
             docker volume rm -f "$DATA_VOLUME_NAME" "$CADDY_DATA_VOLUME_NAME" "$CADDY_CONFIG_VOLUME_NAME" 2>/dev/null || true
             rm -f deploy/caddy/10-basic-auth.caddy
           }
           trap cleanup EXIT
-          docker compose --env-file deploy/.env.example up -d --no-build
+          docker compose --env-file deploy/.env.example up -d --no-build --wait --wait-timeout 120
           status=000
           for attempt in $(seq 1 60); do
             status="$(curl --insecure --silent --output /dev/null --write-out '%{http_code}' https://localhost/health/ready || true)"
@@ -128,7 +129,11 @@ jobs:
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           frameflow_health="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose --env-file deploy/.env.example ps -q frameflow)")"
           caddy_health="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose --env-file deploy/.env.example ps -q caddy)")"
-          [[ "$frameflow_health" == healthy && "$caddy_health" == healthy ]]
+          if [[ "$frameflow_health" != healthy || "$caddy_health" != healthy ]]; then
+            echo "Unexpected health state: frameflow=$frameflow_health caddy=$caddy_health" >&2
+            docker compose --env-file deploy/.env.example ps >&2
+            exit 1
+          fi
 
   contract-smoke:
     name: API + durable worker contract smoke
@@ -154,6 +159,13 @@ jobs:
           FRAMEFLOW_JOB_LEASE_SECONDS: "15"
           FRAMEFLOW_CORS_ORIGINS: http://127.0.0.1:5173
           FRAMEFLOW_ACCEPTANCE_TIMEOUT: "60"
+          FRAMEFLOW_AUTH_ENABLED: "true"
+          FRAMEFLOW_AUTH_LOCAL_SETUP_ENABLED: "false"
+          FRAMEFLOW_AUTH_USERNAME: frameflow-ci
+          FRAMEFLOW_AUTH_PASSWORD: frameflow-ci-contract-password
+          FRAMEFLOW_AUTH_COOKIE_SECURE: "false"
+          FRAMEFLOW_ACCEPTANCE_USERNAME: frameflow-ci
+          FRAMEFLOW_ACCEPTANCE_PASSWORD: frameflow-ci-contract-password
         shell: bash
         run: |
           set -euo pipefail

@@ -6,18 +6,23 @@ BASE_URL="${BASE_URL%/}"
 API_BASE="$BASE_URL/api/v1"
 TIMEOUT_SECONDS="${FRAMEFLOW_ACCEPTANCE_TIMEOUT:-90}"
 SKIP_CREATE="${FRAMEFLOW_ACCEPTANCE_READ_ONLY:-0}"
+AUTH_USERNAME="${FRAMEFLOW_ACCEPTANCE_USERNAME:-${FRAMEFLOW_AUTH_USERNAME:-admin}}"
+AUTH_PASSWORD="${FRAMEFLOW_ACCEPTANCE_PASSWORD:-${FRAMEFLOW_AUTH_PASSWORD:-}}"
 
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
   PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
+elif command -v python >/dev/null 2>&1 && python -c 'import json' >/dev/null 2>&1; then
   PYTHON=python
 else
   echo "ERROR: python3 or python is required for JSON validation." >&2
   exit 2
 fi
+export PYTHONIOENCODING=utf-8
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+COOKIE_JAR="$TMP_DIR/cookies.txt"
+CSRF_TOKEN=""
 
 step() { printf '\n==> %s\n' "$1"; }
 
@@ -25,9 +30,14 @@ request() {
   local method="$1" url="$2" output="$3" expected="$4"
   shift 4
   local status
+  local -a auth_args=()
+  if [ -n "$CSRF_TOKEN" ] && [ "$method" != "GET" ] && [ "$method" != "HEAD" ]; then
+    auth_args+=(--header "X-CSRF-Token: $CSRF_TOKEN")
+  fi
   status="$(curl --silent --show-error --location --max-time 30 \
+    --cookie "$COOKIE_JAR" --cookie-jar "$COOKIE_JAR" \
     --output "$output" --write-out '%{http_code}' \
-    --request "$method" "$@" "$url")"
+    --request "$method" "${auth_args[@]}" "$@" "$url")"
   case ",$expected," in
     *",$status,"*) ;;
     *)
@@ -54,7 +64,9 @@ for raw in sys.argv[2:]:
     except (KeyError, TypeError):
         continue
     if value is not None and str(value):
-        print(value)
+        # Avoid CRLF in command substitutions when the script is run from
+        # Git Bash with Windows Python.
+        print(value, end="")
         raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -71,6 +83,36 @@ echo "live HTTP $status"
 step "Readiness (database and worker)"
 status="$(request GET "$BASE_URL/health/ready" "$TMP_DIR/ready.json" "200")"
 echo "ready HTTP $status"
+
+step "Application authentication"
+request GET "$API_BASE/auth/session" "$TMP_DIR/session.json" "200" >/dev/null
+auth_enabled="$(json_path "$TMP_DIR/session.json" auth_enabled || true)"
+authenticated="$(json_path "$TMP_DIR/session.json" authenticated || true)"
+if [ "$auth_enabled" = "True" ] || [ "$auth_enabled" = "true" ]; then
+  if [ "$authenticated" != "True" ] && [ "$authenticated" != "true" ]; then
+    if [ -z "$AUTH_PASSWORD" ]; then
+      echo "ERROR: authentication is enabled; set FRAMEFLOW_ACCEPTANCE_PASSWORD (and optionally FRAMEFLOW_ACCEPTANCE_USERNAME)." >&2
+      exit 2
+    fi
+    "$PYTHON" - "$AUTH_USERNAME" "$AUTH_PASSWORD" >"$TMP_DIR/login-payload.json" <<'PY'
+import json, sys
+print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))
+PY
+    request POST "$API_BASE/auth/login" "$TMP_DIR/login.json" "200" \
+      --header 'Content-Type: application/json' \
+      --data-binary "@$TMP_DIR/login-payload.json" >/dev/null
+    CSRF_TOKEN="$(json_path "$TMP_DIR/login.json" csrf_token)" || {
+      echo "ERROR: login response has no csrf_token" >&2
+      exit 1
+    }
+    echo "authenticated as $AUTH_USERNAME"
+  else
+    CSRF_TOKEN="$(json_path "$TMP_DIR/session.json" csrf_token || true)"
+    echo "existing authenticated session accepted"
+  fi
+else
+  echo "application authentication disabled"
+fi
 
 step "Seed assets"
 request GET "$API_BASE/assets" "$TMP_DIR/assets.json" "200" >/dev/null
