@@ -80,7 +80,7 @@ backend/app/
 ├─ image_worker.py  # 独立文生图持久队列、租约栅栏、付费重试边界与草稿清理
 ├─ preview.py       # ffmpeg 组合预览渲染、编码器探测、字幕与媒体规范化
 ├─ thumbnails.py    # 视频 poster 抽取与失败占位图
-├─ seed.py          # 幂等创建至少 12 个本地授权安全素材
+├─ seed.py          # 幂等创建 30 个本地授权安全种子（24 图 + 6 视频）
 ├─ worker.py        # 原子领取、租约/心跳、流水线执行、恢复和优雅停机
 │                   # （任务阶段编排 worker._process_pipeline + 事务化结果换版 _persist）
 ├─ routers/         # /api/v1 路由按资源分组

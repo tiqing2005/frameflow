@@ -16,7 +16,7 @@
 ### KI-02：默认匹配可降级为字符相似，需启用 Embedding 才获得语义泛化
 
 - **影响**：在未安装/配置 Embedding provider 时，0.55 权重通道退化为字符 n-gram TF-IDF，对同义改写、比喻和词表外的新字幕匹配有限。
-- **当前处理**：新增 `embeddings.py` 语义 Provider 边界：默认 `EMBEDDING_PROVIDER=auto`，安装 `requirements-embeddings-local.txt`（本地 BGE `bge-small-zh-v1.5`）或配置远程 `/embeddings` 后自动启用真·向量相似度；任何失败回退字符相似，保证零依赖可演示。`evaluation/` 在 10 条 hard case（同义/比喻/干扰项）上测得 Hard Hit@3 从 0.60（字符）提升到 0.80（向量），证明语义通道有效。
+- **当前处理**：新增 `backend/app/embeddings.py` 语义 Provider 边界：默认 `EMBEDDING_PROVIDER=auto`，安装 `backend/requirements-embeddings-local.txt`（本地 BGE `bge-small-zh-v1.5`）或配置远程 `/embeddings` 后自动启用真·向量相似度；任何失败回退字符相似，保证零依赖可演示。`evaluation/` 在 10 条 hard case（同义/比喻/干扰项）上测得 Hard Hit@3 从 0.60（字符）提升到 0.80（向量），证明语义通道有效。
 - **后续方向**：对更大素材库引入向量索引（pgvector/Milvus），并用更多标注样本调整权重。
 
 ### KI-03：视觉标签只理解单张画面，不等于整段视频理解
