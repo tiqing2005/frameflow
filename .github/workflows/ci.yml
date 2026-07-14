@@ -65,6 +65,71 @@ jobs:
       - name: Browser tests
         run: npm run test:browser
 
+  delivery:
+    name: Deployment config and container smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax and Compose config
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n deploy/*.sh scripts/*.sh
+          docker compose --env-file deploy/.env.example config --quiet
+      - name: Validate Caddyfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e DOMAIN=localhost \
+            -e ACME_EMAIL=ci@example.invalid \
+            -e BASIC_AUTH_USER=frameflow \
+            -e BASIC_AUTH_HASH= \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -v "$PWD/deploy/caddy:/etc/caddy/conf.d:ro" \
+            caddy:2.10-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Build deployment image
+        run: docker build --tag frameflow:ci .
+      - name: Smoke HTTPS, Basic Auth and container health
+        shell: bash
+        run: |
+          set -euo pipefail
+          password='frameflow-ci-password'
+          hash="$(docker run --rm caddy:2.10-alpine caddy hash-password --plaintext "$password")"
+          cp deploy/caddy/basic-auth.caddy.example deploy/caddy/10-basic-auth.caddy
+          export DOMAIN=localhost
+          export ACME_EMAIL=ci@example.invalid
+          export BASIC_AUTH_USER=frameflow
+          export BASIC_AUTH_HASH="$hash"
+          export FRAMEFLOW_TAG=ci
+          export DATA_VOLUME_NAME="frameflow_ci_${GITHUB_RUN_ID}"
+          export CADDY_DATA_VOLUME_NAME="frameflow_caddy_data_ci_${GITHUB_RUN_ID}"
+          export CADDY_CONFIG_VOLUME_NAME="frameflow_caddy_config_ci_${GITHUB_RUN_ID}"
+          cleanup() {
+            docker compose --env-file deploy/.env.example logs --tail=200 frameflow caddy 2>/dev/null || true
+            docker compose --env-file deploy/.env.example down -v --remove-orphans 2>/dev/null || true
+            docker volume rm -f "$DATA_VOLUME_NAME" "$CADDY_DATA_VOLUME_NAME" "$CADDY_CONFIG_VOLUME_NAME" 2>/dev/null || true
+            rm -f deploy/caddy/10-basic-auth.caddy
+          }
+          trap cleanup EXIT
+          docker compose --env-file deploy/.env.example up -d --no-build
+          status=000
+          for attempt in $(seq 1 60); do
+            status="$(curl --insecure --silent --output /dev/null --write-out '%{http_code}' https://localhost/health/ready || true)"
+            [[ "$status" == 401 ]] && break
+            sleep 2
+          done
+          [[ "$status" == 401 ]]
+          curl --insecure --fail --silent --show-error \
+            --user "frameflow:$password" https://localhost/health/ready >/dev/null
+          docker compose --env-file deploy/.env.example exec -T caddy \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          frameflow_health="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose --env-file deploy/.env.example ps -q frameflow)")"
+          caddy_health="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose --env-file deploy/.env.example ps -q caddy)")"
+          [[ "$frameflow_health" == healthy && "$caddy_health" == healthy ]]
+
   contract-smoke:
     name: API + durable worker contract smoke
     runs-on: ubuntu-latest

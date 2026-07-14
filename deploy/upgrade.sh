@@ -14,6 +14,7 @@ if [[ "${SKIP_GIT_PULL:-0}" != 1 ]]; then
   git pull --ff-only
 fi
 
+validate_auth_state
 compose config --quiet
 tag="$(env_value FRAMEFLOW_TAG latest)"
 image="frameflow:$tag"
@@ -31,18 +32,21 @@ if ! KEEP_STOPPED=1 bash "$SCRIPT_DIR/backup.sh"; then
   die "升级前备份失败，旧版本已尝试重新启动"
 fi
 
-if compose up -d --remove-orphans && wait_ready 90; then
+if compose up -d --remove-orphans && wait_release_ready 90; then
   compose ps
   printf '升级完成。回滚镜像保留为 %s\n' "$rollback"
   exit 0
 fi
 
-compose logs --tail=150 frameflow || true
+show_release_diagnostics
 if [[ -n "$old_image_id" ]]; then
   printf '新版本未就绪，正在回滚应用镜像……\n' >&2
   docker tag "$old_image_id" "$image"
   compose up -d --no-build --force-recreate frameflow caddy
-  wait_ready 90 || die "自动回滚后仍未就绪，请人工处理"
-  die "新版本健康检查失败，已自动回滚到旧镜像"
+  wait_release_ready 90 || {
+    show_release_diagnostics
+    die "自动回滚后发布验收仍失败，请人工处理"
+  }
+  die "新版本发布验收失败，已自动回滚到旧镜像"
 fi
-die "新版本健康检查失败，且没有可用的旧镜像"
+die "新版本发布验收失败，且没有可用的旧镜像"

@@ -20,6 +20,7 @@ if [[ -n "$domain" ]]; then
   [[ "$domain" != *://* && "$domain" != *" "* ]] || die "域名只填写主机名，例如 app.example.com"
   upsert_env DOMAIN "$domain"
   upsert_env FRAMEFLOW_CORS_ORIGINS "https://$domain"
+  upsert_env PUBLIC_SMOKE_URL "https://$domain"
 fi
 if [[ -n "$email" ]]; then
   upsert_env ACME_EMAIL "$email"
@@ -31,12 +32,28 @@ email="$(env_value ACME_EMAIL)"
 [[ "$email" == *@* && "$email" != *example.com ]] || die "请填写真实的 ACME 联系邮箱"
 
 chmod 600 "$ENV_FILE"
-if [[ "$(env_value ENABLE_BASIC_AUTH true)" == "true" ]]; then
-  FRAMEFLOW_AUTH_NO_RESTART=1 bash "$SCRIPT_DIR/configure-auth.sh" enable
+if is_true "$(env_value ENABLE_BASIC_AUTH true)"; then
+  auth_password=""
+  if [[ -z "$(env_value BASIC_AUTH_HASH)" ]]; then
+    [[ -t 0 ]] || die "非交互部署请先配置 BASIC_AUTH_HASH"
+    read -r -s -p "设置 Demo 访问密码：" auth_password
+    printf '\n'
+    read -r -s -p "再次输入密码：" auth_confirmation
+    printf '\n'
+    [[ "$auth_password" == "$auth_confirmation" ]] || die "两次密码不一致"
+    [[ ${#auth_password} -ge 12 ]] || die "Demo 密码至少需要 12 个字符"
+  fi
+  FRAMEFLOW_AUTH_PASSWORD="$auth_password" FRAMEFLOW_AUTH_NO_RESTART=1 \
+    bash "$SCRIPT_DIR/configure-auth.sh" enable
+  if [[ -n "$auth_password" && -z "${FRAMEFLOW_SMOKE_PASSWORD:-}" ]]; then
+    export FRAMEFLOW_SMOKE_PASSWORD="$auth_password"
+  fi
+  unset auth_password auth_confirmation
 else
   printf '警告：ENABLE_BASIC_AUTH=false，当前部署不会启用整站鉴权。\n' >&2
   FRAMEFLOW_AUTH_NO_RESTART=1 bash "$SCRIPT_DIR/configure-auth.sh" disable
 fi
+validate_auth_state
 cd "$ROOT_DIR"
 compose config --quiet
 
@@ -44,11 +61,11 @@ printf '开始构建 FrameFlow 镜像……\n'
 compose build --pull
 compose up -d --remove-orphans
 
-if ! wait_ready 90; then
-  compose ps
-  compose logs --tail=150 frameflow
-  die "服务未在 180 秒内就绪"
+if ! wait_release_ready 90; then
+  show_release_diagnostics
+  die "发布验收失败：请检查应用就绪、Caddy 健康/配置、DNS、HTTPS 与 Basic Auth"
 fi
+unset FRAMEFLOW_SMOKE_PASSWORD
 
 printf '\n部署完成：\n'
 compose ps

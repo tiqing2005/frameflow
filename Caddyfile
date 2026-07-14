@@ -3,6 +3,11 @@
 	email {$ACME_EMAIL}
 }
 
+# 仅容器内部使用，供 Compose 判断 Caddy 进程和配置是否真正可服务。
+http://127.0.0.1:2015 {
+	respond /healthz 200
+}
+
 {$DOMAIN} {
 	encode zstd gzip
 	# first-deploy 默认生成 10-basic-auth.caddy；仅可信内网可显式关闭。

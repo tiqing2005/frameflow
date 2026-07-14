@@ -32,12 +32,15 @@ case "$action" in
     [[ "$user" =~ ^[A-Za-z0-9._@-]+$ ]] || die "BASIC_AUTH_USER 只能包含字母、数字、点、下划线、@ 或连字符"
     hash="$(env_value BASIC_AUTH_HASH)"
     if [[ -z "$hash" ]]; then
-      [[ -t 0 ]] || die "非交互环境请先在 deploy/.env 写入单引号包裹的 BASIC_AUTH_HASH"
-      read -r -s -p "设置 Demo 访问密码：" password
-      printf '\n'
-      read -r -s -p "再次输入密码：" confirmation
-      printf '\n'
-      [[ "$password" == "$confirmation" ]] || die "两次密码不一致"
+      password="${FRAMEFLOW_AUTH_PASSWORD:-}"
+      if [[ -z "$password" ]]; then
+        [[ -t 0 ]] || die "非交互环境请先写入 BASIC_AUTH_HASH，或临时传入 FRAMEFLOW_AUTH_PASSWORD"
+        read -r -s -p "设置 Demo 访问密码：" password
+        printf '\n'
+        read -r -s -p "再次输入密码：" confirmation
+        printf '\n'
+        [[ "$password" == "$confirmation" ]] || die "两次密码不一致"
+      fi
       [[ ${#password} -ge 12 ]] || die "Demo 密码至少需要 12 个字符"
       hash="$(printf '%s\n' "$password" | docker run --rm -i caddy:2.10-alpine \
         sh -eu -c 'IFS= read -r password; caddy hash-password --plaintext "$password"')"

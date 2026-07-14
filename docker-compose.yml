@@ -99,6 +99,12 @@ services:
     depends_on:
       frameflow:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2015/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
     ports:
       - "80:80"
       - "443:443"
