@@ -44,7 +44,10 @@ async function mockAssetApi(page: Page, deletedRequests: string[]) {
       return
     }
     if (path === `/api/v1/assets/${UPLOADED_ASSET_ID}`) {
-      deletedRequests.push(request.method())
+      if (request.method() === 'GET') {
+        await route.fulfill({ json: uploadedAsset })
+        return
+      }
       if (request.method() !== 'DELETE') {
         await route.fulfill({
           status: 405,
@@ -52,6 +55,7 @@ async function mockAssetApi(page: Page, deletedRequests: string[]) {
         })
         return
       }
+      deletedRequests.push(request.method())
       deleted = true
       await route.fulfill({ status: 204, body: '' })
       return

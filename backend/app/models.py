@@ -146,11 +146,36 @@ class Asset(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tags_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     keywords_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    # Asset tagging is a durable work item in its own right.  The request
+    # generation fences user edits/re-tag requests, while attempt fences a
+    # recovered execution even when a restarted worker reuses the same stable
+    # worker id.
+    tagging_status: Mapped[str] = mapped_column(
+        String(24), default="idle", nullable=False, index=True
+    )
+    tagging_source: Mapped[str | None] = mapped_column(String(24))
+    tagging_mode: Mapped[str | None] = mapped_column(String(24))
+    tagging_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tagging_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tagging_lease_owner: Mapped[str | None] = mapped_column(String(120))
+    tagging_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tagging_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tagging_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tagging_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_assets_tagging_claim",
+            "tagging_status",
+            "tagging_requested_at",
+            "tagging_lease_expires_at",
+        ),
     )
 
 

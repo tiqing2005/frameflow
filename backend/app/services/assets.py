@@ -11,13 +11,11 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..errors import APIError
-from ..llm import suggest_asset_tags_detailed
-from ..models import AIRun, Asset, Selection
-from ..nlp import extract_keywords, infer_topic
+from ..models import Asset, Selection, utcnow
 from ..schemas import AssetPatch
 from ..serializers import asset_dict
 from ..thumbnails import ThumbnailResult, materialize_video_thumbnail
-from .common import _get_asset, add_audit, dumps, stable_hash, stream_upload_to_path
+from .common import _get_asset, add_audit, dumps, stream_upload_to_path
 from .projects import _delete_after_commit
 
 ASSET_EXTENSIONS = {
@@ -85,6 +83,10 @@ def list_assets(
     return {"items": [asset_dict(asset) for asset in items], "total": total}
 
 
+def get_asset(session: Session, asset_id: str) -> Asset:
+    return _get_asset(session, asset_id)
+
+
 def create_asset(
     session: Session,
     settings: Settings,
@@ -138,21 +140,8 @@ def create_asset(
     try:
         tag_values = _parse_csv(tags)
         keyword_values = _parse_csv(keywords)
-        suggestion = None
-        if not tag_values or not keyword_values:
-            # Auto-suggest tags/keywords via the LLM when configured; falls back
-            # to rule extraction on any failure (degrades to current behavior).
-            suggestion = suggest_asset_tags_detailed(name, " ".join(tag_values) or name, settings)
-            suggested_tags, suggested_keywords = suggestion.tags, suggestion.keywords
-            if not tag_values:
-                tag_values = suggested_tags
-            if not keyword_values:
-                keyword_values = suggested_keywords or extract_keywords(name + " " + " ".join(tag_values))
-            if not tag_values:
-                # Keep zero-key/offline mode genuinely useful: the deterministic
-                # fallback must produce both searchable keywords and at least one
-                # topic tag, not an empty tag list advertised as auto-tagging.
-                tag_values = [infer_topic(name, keyword_values)]
+        auto_tag = not tag_values or not keyword_values
+        requested_at = utcnow() if auto_tag else None
         asset = Asset(
             name=name,
             kind=kind,
@@ -165,34 +154,16 @@ def create_asset(
             size_bytes=size_bytes,
             tags_json=dumps(tag_values),
             keywords_json=dumps(keyword_values),
+            tagging_status="queued" if auto_tag else "idle",
+            tagging_mode="fill_missing" if auto_tag else None,
+            tagging_generation=1 if auto_tag else 0,
+            tagging_attempt=0,
+            tagging_requested_at=requested_at,
             is_seed=False,
             active=True,
         )
         session.add(asset)
         session.flush()
-        if suggestion is not None:
-            session.add(
-                AIRun(
-                    operation="asset_tagging",
-                    provider=suggestion.provider,
-                    model=suggestion.model,
-                    prompt_version="asset-tags-v1",
-                    input_hash=stable_hash(name, tags, keywords, "asset-tags-v1"),
-                    status=suggestion.status,
-                    degraded=suggestion.degraded,
-                    duration_ms=suggestion.duration_ms,
-                    output_summary_json=dumps(
-                        {
-                            "asset_id": asset.id,
-                            "generated_tags": tag_values,
-                            "generated_keywords": keyword_values,
-                            "tokens": suggestion.usage or {},
-                            "fallback": suggestion.degraded,
-                        }
-                    ),
-                    error_message=suggestion.error_message,
-                )
-            )
         add_audit(
             session,
             None,
@@ -212,18 +183,46 @@ def create_asset(
 def patch_asset(
     session: Session, asset_id: str, payload: AssetPatch, request_id: str | None
 ) -> Asset:
-    if payload.active is False and session.get_bind().dialect.name == "sqlite":
+    semantic_change = payload.name is not None or payload.tags is not None or payload.keywords is not None
+    if (semantic_change or payload.active is False) and session.get_bind().dialect.name == "sqlite":
         # Serialize against manual selection writes so an asset cannot become
         # inactive between selection validation and persistence.
         session.execute(text("BEGIN IMMEDIATE"))
     asset = _get_asset(session, asset_id)
     before = asset_dict(asset)
+    task_active = asset.tagging_status in {"queued", "running"}
+    active_mode = asset.tagging_mode
     if payload.name is not None:
         asset.name = payload.name
     if payload.tags is not None:
         asset.tags_json = dumps(payload.tags)
     if payload.keywords is not None:
         asset.keywords_json = dumps(payload.keywords)
+    if payload.tags is not None or payload.keywords is not None:
+        # Explicit metadata edits always win over an older background result.
+        asset.tagging_generation += 1
+        asset.tagging_attempt = 0
+        asset.tagging_status = "idle"
+        asset.tagging_source = None
+        asset.tagging_mode = None
+        asset.tagging_lease_owner = None
+        asset.tagging_lease_expires_at = None
+        asset.tagging_requested_at = None
+        asset.tagging_started_at = None
+        asset.tagging_finished_at = None
+    elif payload.name is not None and task_active:
+        # A text/rule fallback must use the new name. Requeue the same logical
+        # mode and fence the execution that captured the old name.
+        asset.tagging_generation += 1
+        asset.tagging_attempt = 0
+        asset.tagging_status = "queued"
+        asset.tagging_source = None
+        asset.tagging_mode = active_mode or "fill_missing"
+        asset.tagging_lease_owner = None
+        asset.tagging_lease_expires_at = None
+        asset.tagging_requested_at = utcnow()
+        asset.tagging_started_at = None
+        asset.tagging_finished_at = None
     if payload.active is not None:
         if asset.active and not payload.active:
             selection_count = session.scalar(

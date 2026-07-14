@@ -13,9 +13,11 @@ from .assets import (
     _valid_asset_signature,
     create_asset,
     delete_asset,
+    get_asset,
     list_assets,
     patch_asset,
 )
+from .asset_tagging import request_asset_retag
 from .audit import list_audit
 from .common import (
     _get_asset,
@@ -64,6 +66,7 @@ __all__ = [
     "delete_project",
     "dumps",
     "get_job_detail",
+    "get_asset",
     "get_project_preview",
     "list_assets",
     "list_audit",
@@ -77,6 +80,7 @@ __all__ = [
     "rematch_segment",
     "reorder_segments",
     "retry_job",
+    "request_asset_retag",
     "set_fault",
     "stable_hash",
     "build_preview_plan",

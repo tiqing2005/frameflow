@@ -1,5 +1,7 @@
 export type ProjectStatus = 'queued' | 'processing' | 'ready' | 'failed' | 'canceled'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+export type AssetTaggingStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'degraded'
+export type AssetTaggingSource = 'vision' | 'text_llm' | 'rules'
 export type JobStage =
   | 'validating'
   | 'extracting'
@@ -88,6 +90,11 @@ export interface Asset {
   updated_at?: string
   is_seed?: boolean
   active?: boolean
+  tagging_status?: AssetTaggingStatus
+  tagging_source?: AssetTaggingSource | null
+  tagging_requested_at?: string | null
+  tagging_started_at?: string | null
+  tagging_finished_at?: string | null
 }
 
 export interface Recommendation {

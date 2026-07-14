@@ -59,6 +59,11 @@ class Settings:
     llm_api_key: str | None = None
     llm_model: str = "gpt-4.1-mini"
     llm_timeout: float = 20.0
+    vision_provider: str = "none"
+    vision_base_url: str = "https://api.openai.com/v1"
+    vision_api_key: str | None = None
+    vision_model: str = "gpt-4o-mini"
+    vision_timeout: float = 30.0
     embedding_provider: str = "auto"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_base_url: str = "https://api.openai.com/v1"
@@ -153,6 +158,17 @@ class Settings:
             llm_api_key=os.getenv("LLM_API_KEY", "").strip() or None,
             llm_model=os.getenv("LLM_MODEL", "gpt-4.1-mini").strip(),
             llm_timeout=max(0.1, _float("LLM_TIMEOUT", 20.0)),
+            # Vision credentials are deliberately isolated from both the
+            # generic LLM and legacy OpenAI settings. A missing VISION_API_KEY
+            # must disable visual analysis instead of leaking another
+            # provider's credential to the configured gateway.
+            vision_provider=os.getenv("VISION_PROVIDER", "none").strip().lower(),
+            vision_base_url=os.getenv(
+                "VISION_BASE_URL", "https://api.openai.com/v1"
+            ).strip().rstrip("/"),
+            vision_api_key=os.getenv("VISION_API_KEY", "").strip() or None,
+            vision_model=os.getenv("VISION_MODEL", "gpt-4o-mini").strip(),
+            vision_timeout=max(0.1, _float("VISION_TIMEOUT", 30.0)),
             embedding_provider=os.getenv("EMBEDDING_PROVIDER", "auto").strip().lower(),
             embedding_model=os.getenv("FRAMEFLOW_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip(),
             embedding_base_url=os.getenv(

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
+from app.llm import SemanticEnhancement
 from app.models import Job, JobEvent, Project, Source, utcnow
 from app.worker import DurableWorker, WorkerFailure
 
@@ -470,14 +471,23 @@ def test_asset_upload_patch_dashboard_and_project_delete(runtime):
         files={"file": ("auto-tags.png", png, "image/png")},
     )
     assert auto_tagged.status_code == 201, auto_tagged.text
-    assert auto_tagged.json()["tags"]
-    assert auto_tagged.json()["keywords"]
+    assert auto_tagged.json()["tags"] == []
+    assert auto_tagged.json()["keywords"] == []
+    assert auto_tagged.json()["tagging_status"] == "queued"
+    assert worker.run_once() is True
+    completed_tagging = client.get(
+        f"/api/v1/assets/{auto_tagged.json()['id']}"
+    ).json()
+    assert completed_tagging["tags"]
+    assert completed_tagging["keywords"]
+    assert completed_tagging["tagging_status"] == "degraded"
+    assert completed_tagging["tagging_source"] == "rules"
     tagging_run = next(
         item
         for item in client.get("/api/v1/runs").json()["items"]
         if item["operation"] == "asset_tagging"
     )
-    assert tagging_run["prompt_version"] == "asset-tags-v1"
+    assert tagging_run["prompt_version"] == "asset-vision-tags-v1"
     assert tagging_run["input_hash"]
     assert tagging_run["provider"] == "rules"
 
@@ -522,6 +532,45 @@ def test_pipeline_records_semantic_and_matching_runs_separately(runtime):
     assert matching["prompt_version"] == "hybrid-ranker-v2"
     assert matching["input_hash"]
     assert matching["output_summary"]["traces"]
+
+
+def test_pipeline_persists_gemini_as_semantic_run_provider(runtime, monkeypatch):
+    client, worker, _database, _settings = runtime
+
+    def fake_gemini_enhancement(transcript, _settings):
+        return SemanticEnhancement(
+            segments=[
+                {
+                    "text": transcript,
+                    "topic": "智能内容处理",
+                    "keywords": ["人工智能", "工作效率", "数据安全"],
+                }
+            ],
+            provider="gemini",
+            model="gemini-3.1-flash-lite-preview",
+            degraded=False,
+            status="succeeded",
+            duration_ms=125,
+            usage={"input_tokens": 90, "output_tokens": 30, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr("app.worker.enhance_semantic_segments", fake_gemini_enhancement)
+    created = create_project(client, title="Gemini 语义追踪", key="gemini-trace-run")
+    assert worker.run_once() is True
+
+    semantic = next(
+        item
+        for item in client.get("/api/v1/runs").json()["items"]
+        if item["operation"] == "semantic_segmentation"
+        and item["job_id"] == created["job"]["id"]
+    )
+    assert semantic["provider"] == "gemini"
+    assert semantic["model"] == "gemini-3.1-flash-lite-preview"
+    assert semantic["status"] == "succeeded"
+    assert semantic["degraded"] is False
+    assert semantic["input_tokens"] == 90
+    assert semantic["output_tokens"] == 30
+    assert semantic["total_tokens"] == 120
 
 
 def test_audio_pipeline_records_dashscope_transcription_run(runtime, monkeypatch):

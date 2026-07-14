@@ -70,11 +70,29 @@ class Database:
                 "thumbnail_url": "TEXT",
                 "thumbnail_storage_path": "TEXT",
                 "thumbnail_mime_type": "VARCHAR(160)",
+                "tagging_status": "VARCHAR(24) NOT NULL DEFAULT 'idle'",
+                "tagging_source": "VARCHAR(24)",
+                "tagging_mode": "VARCHAR(24)",
+                "tagging_generation": "INTEGER NOT NULL DEFAULT 0",
+                "tagging_attempt": "INTEGER NOT NULL DEFAULT 0",
+                "tagging_lease_owner": "VARCHAR(120)",
+                "tagging_lease_expires_at": "DATETIME",
+                "tagging_requested_at": "DATETIME",
+                "tagging_started_at": "DATETIME",
+                "tagging_finished_at": "DATETIME",
             }
             for name, definition in asset_migrations.items():
                 if name not in asset_columns:
                     with self.engine.begin() as connection:
                         connection.execute(text(f"ALTER TABLE assets ADD COLUMN {name} {definition}"))
+            with self.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_assets_tagging_claim "
+                        "ON assets (tagging_status, tagging_requested_at, "
+                        "tagging_lease_expires_at)"
+                    )
+                )
             heartbeat_columns = {
                 column["name"] for column in inspect(self.engine).get_columns("worker_heartbeats")
             }

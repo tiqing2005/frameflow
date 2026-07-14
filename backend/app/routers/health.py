@@ -66,18 +66,37 @@ def ready_payload(session: Session, settings: Settings) -> dict:
     for job in active_jobs:
         if job.lease_owner is not None:
             active_jobs_by_worker.setdefault(job.lease_owner, []).append(job)
+    active_asset_tasks = (
+        session.scalars(
+            select(Asset).where(
+                Asset.tagging_status == "running",
+                Asset.tagging_lease_owner.in_(online_worker_ids),
+                Asset.tagging_lease_expires_at >= now,
+            )
+        ).all()
+        if online_worker_ids
+        else []
+    )
+    active_assets_by_worker: dict[str, list[Asset]] = {}
+    for asset in active_asset_tasks:
+        if asset.tagging_lease_owner is not None:
+            active_assets_by_worker.setdefault(asset.tagging_lease_owner, []).append(asset)
 
     worker_instances = []
     for heartbeat in online_heartbeats:
         jobs = active_jobs_by_worker.get(heartbeat.worker_id, [])
+        asset_tasks = active_assets_by_worker.get(heartbeat.worker_id, [])
         isolated = heartbeat.operational_state == "isolated"
         worker_instances.append(
             {
                 "worker_id": heartbeat.worker_id,
-                "state": "isolated" if isolated else ("busy" if jobs else "idle"),
+                "state": "isolated" if isolated else (
+                    "busy" if jobs or asset_tasks else "idle"
+                ),
                 "accepting_jobs": not isolated,
                 "detail": heartbeat.status_detail,
                 "active_job_ids": [job.id for job in jobs],
+                "active_asset_tagging_ids": [asset.id for asset in asset_tasks],
                 "last_heartbeat": _as_utc(heartbeat.heartbeat_at)
                 .isoformat()
                 .replace("+00:00", "Z"),
@@ -89,8 +108,9 @@ def ready_payload(session: Session, settings: Settings) -> dict:
         heartbeat.operational_state != "isolated"
         for heartbeat in online_heartbeats
     )
-    busy_workers = len(active_jobs_by_worker)
+    busy_workers = len(set(active_jobs_by_worker) | set(active_assets_by_worker))
     active_job_ids = [job.id for job in active_jobs]
+    active_asset_tagging_ids = [asset.id for asset in active_asset_tasks]
     isolated_details = [
         heartbeat.status_detail
         for heartbeat in online_heartbeats
@@ -103,7 +123,7 @@ def ready_payload(session: Session, settings: Settings) -> dict:
         worker_state = "isolated"
     elif accepting_workers < online_workers:
         worker_state = "degraded"
-    elif active_jobs:
+    elif active_jobs or active_asset_tasks:
         worker_state = "busy"
     else:
         worker_state = "idle"
@@ -131,6 +151,7 @@ def ready_payload(session: Session, settings: Settings) -> dict:
             "last_heartbeat": last_heartbeat,
             "online_workers": online_workers,
             "active_job_ids": active_job_ids,
+            "active_asset_tagging_ids": active_asset_tagging_ids,
             "capacity": {
                 "configured": settings.worker_concurrency,
                 "online": online_workers,

@@ -39,6 +39,15 @@ from .embeddings import get_semantic_scorer
 from .nlp import RankingTrace, rank_assets_with_trace
 from .preview import PreviewRenderError, render_preview
 from .services import add_audit, build_preview_plan, dumps, stable_hash
+from .services.asset_tagging import (
+    ASSET_TAGGING_MAX_ATTEMPTS,
+    AssetTaggingClaim,
+    apply_asset_tagging_outcome,
+    asset_tagging_snapshot,
+    finalize_exhausted_asset_tagging,
+    generate_asset_tagging_outcome,
+    outcome_with_worker_fallback,
+)
 
 logger = logging.getLogger("frameflow.worker")
 
@@ -89,6 +98,10 @@ class DurableWorker:
         self._claimed_generations: dict[str, int] = {}
         self._timed_out_pipelines: set[threading.Thread] = set()
         self._isolation_detail: str | None = None
+        # Split the initial preference across stable worker ids, then flip
+        # after every item. Both durable queues therefore make progress while
+        # idle capacity is immediately available to either one.
+        self._prefer_asset_tagging = int(self.worker_token[-1], 16) % 2 == 1
         # Resolve the semantic scorer once: True embedding (local BGE / remote)
         # when available, else None and rank_assets falls back to char-ngram.
         self._semantic_scorer = get_semantic_scorer(settings)
@@ -245,6 +258,69 @@ class DurableWorker:
             self._claimed_generations[job.id] = job.execution_generation
             return job.id
 
+    def claim_asset_tagging(self) -> AssetTaggingClaim | None:
+        was_isolated = bool(self._timed_out_pipelines)
+        if self._refresh_timed_out_pipelines():
+            return None
+        if was_isolated:
+            self.heartbeat()
+        now = utcnow()
+        lease_until = now + timedelta(seconds=self.settings.job_lease_seconds)
+        with self.db.session() as session:
+            dialect = session.get_bind().dialect.name
+            if dialect == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+
+            exhausted_query = select(Asset).where(
+                Asset.tagging_status == "running",
+                or_(
+                    Asset.tagging_lease_expires_at.is_(None),
+                    Asset.tagging_lease_expires_at < now,
+                ),
+                Asset.tagging_attempt >= ASSET_TAGGING_MAX_ATTEMPTS,
+            )
+            if dialect == "postgresql":
+                exhausted_query = exhausted_query.with_for_update(skip_locked=True)
+            for exhausted in session.scalars(exhausted_query).all():
+                finalize_exhausted_asset_tagging(session, exhausted)
+
+            claim_query = (
+                select(Asset)
+                .where(
+                    Asset.tagging_attempt < ASSET_TAGGING_MAX_ATTEMPTS,
+                    or_(
+                        Asset.tagging_status == "queued",
+                        and_(
+                            Asset.tagging_status == "running",
+                            or_(
+                                Asset.tagging_lease_expires_at.is_(None),
+                                Asset.tagging_lease_expires_at < now,
+                            ),
+                        ),
+                    ),
+                )
+                .order_by(Asset.tagging_requested_at, Asset.created_at)
+                .limit(1)
+            )
+            if dialect == "postgresql":
+                claim_query = claim_query.with_for_update(skip_locked=True)
+            asset = session.scalar(claim_query)
+            if asset is None:
+                return None
+            asset.tagging_status = "running"
+            asset.tagging_attempt += 1
+            asset.tagging_lease_owner = self.worker_id
+            asset.tagging_lease_expires_at = lease_until
+            asset.tagging_finished_at = None
+            if asset.tagging_started_at is None:
+                asset.tagging_started_at = now
+            return AssetTaggingClaim(
+                asset.id,
+                asset.tagging_generation,
+                asset.tagging_attempt,
+                self.worker_id,
+            )
+
     def _fence(self, session, job_id: str, generation: int) -> Job:
         """Acquire a write fence and return the still-owned execution."""
         now = utcnow()
@@ -294,6 +370,34 @@ class DurableWorker:
                 heartbeat.heartbeat_at = now
         return True
 
+    def _renew_asset_tagging_lease(self, claim: AssetTaggingClaim) -> bool:
+        now = utcnow()
+        with self.db.session() as session:
+            result = session.execute(
+                update(Asset)
+                .where(
+                    Asset.id == claim.asset_id,
+                    Asset.tagging_status == "running",
+                    Asset.tagging_generation == claim.generation,
+                    Asset.tagging_attempt == claim.attempt,
+                    Asset.tagging_lease_owner == claim.worker_id,
+                )
+                .values(
+                    tagging_lease_expires_at=now
+                    + timedelta(seconds=self.settings.job_lease_seconds),
+                )
+            )
+            if result.rowcount != 1:
+                return False
+            heartbeat = session.scalar(
+                select(WorkerHeartbeat).where(WorkerHeartbeat.worker_id == self.worker_id)
+            )
+            if heartbeat is None:
+                session.add(WorkerHeartbeat(worker_id=self.worker_id, heartbeat_at=now))
+            else:
+                heartbeat.heartbeat_at = now
+        return True
+
     def _abandon_execution(self, job_id: str, generation: int) -> None:
         """Fence a stopping worker immediately and leave the running job recoverable."""
         now = utcnow()
@@ -307,6 +411,21 @@ class DurableWorker:
                     Job.execution_generation == generation,
                 )
                 .values(lease_owner=None, lease_expires_at=now, heartbeat_at=now)
+            )
+
+    def _abandon_asset_tagging_execution(self, claim: AssetTaggingClaim) -> None:
+        now = utcnow()
+        with self.db.session() as session:
+            session.execute(
+                update(Asset)
+                .where(
+                    Asset.id == claim.asset_id,
+                    Asset.tagging_status == "running",
+                    Asset.tagging_generation == claim.generation,
+                    Asset.tagging_attempt == claim.attempt,
+                    Asset.tagging_lease_owner == claim.worker_id,
+                )
+                .values(tagging_lease_owner=None, tagging_lease_expires_at=now)
             )
 
     def _lease_loop(
@@ -323,6 +442,27 @@ class DurableWorker:
                     return
             except Exception:
                 logger.exception("Lease renewal failed job_id=%s", job_id)
+            if stop_event.wait(self.lease_renew_interval):
+                return
+
+    def _asset_tagging_lease_loop(
+        self,
+        claim: AssetTaggingClaim,
+        stop_event: threading.Event,
+        lease_lost: threading.Event,
+    ) -> None:
+        while not stop_event.is_set() and not self.stopping:
+            try:
+                if not self._renew_asset_tagging_lease(claim):
+                    lease_lost.set()
+                    return
+            except Exception:
+                logger.warning(
+                    "asset tagging lease renewal failed asset_id=%s generation=%s attempt=%s",
+                    claim.asset_id,
+                    claim.generation,
+                    claim.attempt,
+                )
             if stop_event.wait(self.lease_renew_interval):
                 return
 
@@ -996,6 +1136,109 @@ class DurableWorker:
                 WorkerFailure("UNEXPECTED_WORKER_ERROR", "后台处理发生未预期错误", True),
             )
 
+    def _process_asset_tagging_task(self, claim: AssetTaggingClaim) -> None:
+        with self.db.session() as session:
+            snapshot = asset_tagging_snapshot(session, claim)
+        if snapshot is None:
+            return
+        try:
+            outcome = generate_asset_tagging_outcome(snapshot, self.settings)
+        except Exception as exc:
+            # Provider/media exception details can contain URLs or local paths.
+            # Keep logs and persisted records on fixed safe categories only.
+            logger.warning(
+                "asset tagging degraded after internal error asset_id=%s error_type=%s",
+                claim.asset_id,
+                type(exc).__name__,
+            )
+            outcome = outcome_with_worker_fallback(
+                snapshot,
+                "asset_tagging_internal_error",
+                "后台识别发生异常，已使用本地规则生成标签",
+            )
+        try:
+            with self.db.session() as session:
+                apply_asset_tagging_outcome(session, claim, outcome)
+        except Exception as exc:
+            # Leave the lease recoverable. A later attempt will either apply a
+            # normal result or finish deterministically after the attempt cap.
+            logger.warning(
+                "asset tagging persistence deferred asset_id=%s error_type=%s",
+                claim.asset_id,
+                type(exc).__name__,
+            )
+
+    def _complete_asset_tagging_locally(
+        self, claim: AssetTaggingClaim, error_code: str, error_message: str
+    ) -> None:
+        with self.db.session() as session:
+            snapshot = asset_tagging_snapshot(session, claim)
+        if snapshot is None:
+            return
+        outcome = outcome_with_worker_fallback(snapshot, error_code, error_message)
+        try:
+            with self.db.session() as session:
+                apply_asset_tagging_outcome(session, claim, outcome)
+        except Exception as exc:
+            logger.warning(
+                "asset tagging local fallback deferred asset_id=%s error_type=%s",
+                claim.asset_id,
+                type(exc).__name__,
+            )
+
+    def process_asset_tagging(self, claim: AssetTaggingClaim) -> None:
+        stop_event = threading.Event()
+        lease_lost = threading.Event()
+        completed = threading.Event()
+        renewer = threading.Thread(
+            target=self._asset_tagging_lease_loop,
+            args=(claim, stop_event, lease_lost),
+            name=f"frameflow-asset-lease-{claim.asset_id[:8]}",
+            daemon=True,
+        )
+
+        def run_tagging() -> None:
+            try:
+                self._process_asset_tagging_task(claim)
+            finally:
+                completed.set()
+
+        pipeline = threading.Thread(
+            target=run_tagging,
+            name=f"frameflow-asset-tagging-{claim.asset_id[:8]}",
+            daemon=True,
+        )
+        renewer.start()
+        pipeline.start()
+        deadline = time.monotonic() + self.settings.job_max_execution_seconds
+        try:
+            while not completed.wait(0.05):
+                if lease_lost.is_set():
+                    self._isolate_pipeline(
+                        pipeline,
+                        f"asset tagging {claim.asset_id} lost its lease; "
+                        "waiting for its execution thread to exit",
+                    )
+                    return
+                if self.stopping:
+                    self._abandon_asset_tagging_execution(claim)
+                    return
+                if time.monotonic() >= deadline:
+                    self._isolate_pipeline(
+                        pipeline,
+                        f"asset tagging {claim.asset_id} exceeded the hard timeout; "
+                        "waiting for its execution thread to exit",
+                    )
+                    self._complete_asset_tagging_locally(
+                        claim,
+                        "asset_tagging_timeout",
+                        "后台识别超时，已使用本地规则生成标签",
+                    )
+                    return
+        finally:
+            stop_event.set()
+            renewer.join(timeout=max(0.2, self.lease_renew_interval * 2))
+
     def process(self, job_id: str, generation: int | None = None) -> None:
         generation = generation or self._claimed_generations.pop(job_id, None)
         if generation is None:
@@ -1071,11 +1314,29 @@ class DurableWorker:
 
     def run_once(self) -> bool:
         self.heartbeat()
-        job_id = self.claim()
-        if job_id is None:
-            return False
-        self.process(job_id)
-        return True
+        if self._prefer_asset_tagging:
+            asset_claim = self.claim_asset_tagging()
+            if asset_claim is not None:
+                self._prefer_asset_tagging = False
+                self.process_asset_tagging(asset_claim)
+                return True
+            job_id = self.claim()
+            if job_id is not None:
+                self._prefer_asset_tagging = True
+                self.process(job_id)
+                return True
+        else:
+            job_id = self.claim()
+            if job_id is not None:
+                self._prefer_asset_tagging = True
+                self.process(job_id)
+                return True
+            asset_claim = self.claim_asset_tagging()
+            if asset_claim is not None:
+                self._prefer_asset_tagging = False
+                self.process_asset_tagging(asset_claim)
+                return True
+        return False
 
     def run_forever(self) -> None:
         logger.info("FrameFlow worker started worker_id=%s", self.worker_id)

@@ -167,6 +167,8 @@ export const api = {
     request<Paged<Asset> | Asset[]>(`/assets${query(params)}`, {}, options).then((data) =>
       Array.isArray(data) ? { items: data, total: data.length } : data,
     ),
+  asset: (id: string, options?: ApiCallOptions) =>
+    request<Asset>(`/assets/${encodeURIComponent(id)}`, {}, options),
   uploadAsset: (file: File, name: string, tags: string[], keywords: string[], options?: ApiCallOptions) => {
     const form = new FormData()
     form.append('file', file)
@@ -177,6 +179,8 @@ export const api = {
   },
   updateAsset: (id: string, changes: Partial<Asset>, options?: ApiCallOptions) =>
     request<Asset>(`/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(changes) }, options),
+  retagAsset: (id: string, options?: ApiCallOptions) =>
+    request<Asset>(`/assets/${encodeURIComponent(id)}/retag`, { method: 'POST' }, options),
   deleteAsset: (id: string, options?: ApiCallOptions) =>
     request<void>(`/assets/${encodeURIComponent(id)}`, { method: 'DELETE' }, options),
   runs: (options?: ApiCallOptions) => request<Paged<Run> | Run[]>('/runs', {}, options).then((data) =>
