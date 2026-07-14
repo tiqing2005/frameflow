@@ -1053,21 +1053,22 @@
         <div class="hero-content">
           <span class="eyebrow">◆ 项目专属 · 可执行 · 可留证</span>
           <h1><span>FrameFlow AI</span><br>全功能测试与演示指南</h1>
-          <p class="hero-lead">从“页面能打开”，一路验证到真实异步任务、可解释素材匹配、人工编辑持久化、失败重试、Worker 恢复与发布验收。</p>
+          <p class="hero-lead">从“页面能打开”，一路验证到真实异步任务、可解释素材匹配、人工编辑持久化、文生图与视觉标签、失败重试、Worker 恢复与发布验收。</p>
           <div class="hero-actions">
             <a class="button button-primary" href="#core">开始 15 分钟快速验收 →</a>
             <a class="button button-ghost" href="#matrix">查看全部功能矩阵</a>
             <button class="button button-ghost" type="button" onclick="window.print()">打印 / 导出 PDF</button>
           </div>
           <div class="hero-stats">
-            <div class="hero-stat"><strong>7</strong><span>用户页面</span></div>
-            <div class="hero-stat"><strong>25+</strong><span>真实 API 契约</span></div>
-            <div class="hero-stat"><strong>42 / 42</strong><span>本次后端用例通过</span></div>
-            <div class="hero-stat"><strong>9 / 9</strong><span>本次浏览器用例通过</span></div>
+            <div class="hero-stat"><strong>222</strong><span>后端用例通过</span></div>
+            <div class="hero-stat"><strong>48</strong><span>Chromium 用例通过</span></div>
+            <div class="hero-stat"><strong>7</strong><span>启动器契约通过</span></div>
+            <div class="hero-stat"><strong>PASS</strong><span>前端 lint / build</span></div>
           </div>
           <div class="verified">
-            <span>✓ 2026-07-14 本机验证</span>
+            <span>✓ 2026-07-15 最终融合代码本机验证</span>
             <span>✓ 前端 lint / build 通过</span>
+            <span>✓ 公网文生图与视觉标签真实链路已复验</span>
             <span>✓ 独立 HTML，无外部依赖</span>
             <span>! 发布前仍需固定最终 commit 重跑</span>
           </div>
@@ -1152,7 +1153,7 @@
             <p>覆盖所有页面、主要异常与响应式体验。</p>
             <ul>
               <li>快速路线全部内容</li>
-              <li>素材上传、搜索和元数据编辑</li>
+              <li>素材上传、搜索、视觉标签和文生图入库</li>
               <li>运行记录与 Token 语义</li>
               <li>AI 降级、任务失败和重试</li>
               <li>移动端、键盘、空状态和网络错误</li>
@@ -1178,7 +1179,7 @@
           <div>
             <span class="section-kicker">03 · Prepare & Run</span>
             <h2>需要什么，以及怎么启动</h2>
-            <p>文本主流程不依赖任何外部 AI。真实音视频转写属于条件能力，需要额外安装 ASR 依赖或配置外部 Provider。</p>
+            <p>文本主流程不依赖任何外部 AI。真实音视频转写、Gemini 视觉标签和文生图属于条件能力，需要安装本地模型或配置对应 Provider；不可用时必须如实失败或按既定路径降级。</p>
           </div>
         </div>
 
@@ -1206,7 +1207,7 @@
 
         <div class="callout danger">
           <span class="callout-icon">!</span>
-          <div><strong>开始正式测试前，先完整重启当前服务</strong><p>仓库当前有未提交修改，运行中的本地进程也可能早于最新代码。先记录最终 commit / 工作树状态，再重启 API、Worker 和前端，避免用旧进程画面证明新代码。</p></div>
+          <div><strong>开始正式测试前，先完整重启当前服务</strong><p>如果工作树仍有未提交修改，或本地进程可能早于待验收代码，先记录最终 commit / 工作树状态，再重启 API、Worker 和前端，避免用旧进程画面证明新代码。</p></div>
         </div>
 
         <div class="tabs" data-tabs>
@@ -1473,7 +1474,7 @@ docker compose --env-file deploy\.env ps</pre>
           </details>
 
           <details class="test-group">
-            <summary><div><h3>素材库</h3><p>搜索、上传、预览、自动元数据、安全删除和边界</p></div><span class="group-count">9 项</span></summary>
+            <summary><div><h3>素材库</h3><p>搜索、上传、预览、视觉标签、安全删除和边界</p></div><span class="group-count">10 项</span></summary>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>编号</th><th>功能 / 怎么做</th><th>这么做的用意</th><th>通过标准</th><th>证据</th></tr></thead>
@@ -1484,9 +1485,30 @@ docker compose --env-file deploy\.env ps</pre>
                   <tr class="test-case" data-type="manual"><td>ASSET-04</td><td>编辑名称、标签、关键词</td><td>证明素材可运营维护</td><td>保存后搜索新词可命中</td><td>编辑前后截图</td></tr>
                   <tr class="test-case" data-type="isolated"><td>ASSET-05</td><td>上传 SVG、伪装扩展名、不支持类型</td><td>验证文件签名与允许列表</td><td>明确拒绝，不留孤儿记录或部分文件</td><td>4xx 错误</td></tr>
                   <tr class="test-case" data-type="isolated"><td>ASSET-06</td><td>上传接近/超过 100MB 的文件</td><td>验证容量限制</td><td>超限及时拒绝，不造成异常内存增长</td><td>错误与资源监控</td></tr>
-                  <tr class="test-case" data-type="manual"><td>ASSET-07</td><td>标签/关键词留空上传素材</td><td>验证自动元数据建议及来源追溯</td><td>LLM 可用时记录真实 Provider；不可用时规则回退，不宣称视觉识别</td><td>素材详情 + AIRun</td></tr>
+                  <tr class="test-case" data-type="manual"><td>ASSET-07</td><td>标签/关键词留空上传素材</td><td>验证画面识别、隐私提示及来源追溯</td><td>视觉 Provider 可用时只发送一张归一化画面并记录真实 Provider/Model；不可用时明确标为文本或规则降级</td><td>素材详情 + AIRun</td></tr>
                   <tr class="test-case" data-type="manual"><td>ASSET-08</td><td>删除未被引用的用户上传素材</td><td>验证 UI、DB、媒体文件与审计一致</td><td>返回 204，列表数量减少，刷新后不恢复</td><td>删除前后截图 + 审计</td></tr>
                   <tr class="test-case" data-type="isolated"><td>ASSET-09</td><td>删除种子、已引用或会破坏保底数量的素材</td><td>防止破坏 Demo 和历史项目</td><td>明确 409/422 错误，素材与文件保留</td><td>错误提示 + API</td></tr>
+                  <tr class="test-case" data-type="manual"><td>ASSET-10</td><td>对已有图片或视频重新生成标签</td><td>验证视觉任务状态和人工覆盖保护</td><td>先确认会替换标签；排队/识别/视觉完成或降级状态清楚，识别中编辑与删除被禁用</td><td>详情抽屉 + AIRun</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details class="test-group">
+            <summary><div><h3>文生图闭环</h3><p>持久任务、费用确认、原子入库、片段应用与崩溃恢复</p></div><span class="group-count">9 项</span></summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>编号</th><th>功能 / 怎么做</th><th>这么做的用意</th><th>通过标准</th><th>证据</th></tr></thead>
+                <tbody>
+                  <tr class="test-case" data-type="manual"><td>IMG-01</td><td>从素材库进入“生成图片”并提交描述、风格、名称和比例</td><td>验证自然语言创作入口与输入约束</td><td>一次只创建一张；任务 ID、比例、模型和真实阶段可见</td><td>生成页录屏 + API</td></tr>
+                  <tr class="test-case" data-type="manual"><td>IMG-02</td><td>从低相关候选点击“按本段字幕生成”</td><td>验证字幕到新素材的闭环入口</td><td>提示词按当前片段预填；未点击提交前不产生可能计费调用</td><td>工作台录屏</td></tr>
+                  <tr class="test-case" data-type="auto"><td>IMG-03</td><td>任务排队/运行时刷新或重启服务</td><td>验证持久化与恢复</td><td>同一 generation 恢复；成功结果不因刷新或 attempt 上限丢失</td><td>后端专项测试</td></tr>
+                  <tr class="test-case" data-type="manual"><td>IMG-04</td><td>等待成功但暂不确认入库</td><td>证明付费结果不会越权进入全局素材库</td><td>图片只在私有草稿区；素材数量不变，页面显示真实耗时</td><td>生成页 + 素材数</td></tr>
+                  <tr class="test-case" data-type="auto"><td>IMG-05</td><td>确认加入素材库并用于当前片段</td><td>验证原子入库与选择写入</td><td>只产生一个正式素材，排队标签任务并写入 <code>generated</code> Selection</td><td>API + 工作台刷新</td></tr>
+                  <tr class="test-case" data-type="auto"><td>IMG-06</td><td>生成期间修改同一字幕版本后再确认</td><td>防止旧结果覆盖新编辑</td><td>允许仅入库但不替换片段，冲突原因明确</td><td>409/确认响应</td></tr>
+                  <tr class="test-case" data-type="isolated"><td>IMG-07</td><td>模拟 Provider 超时、断流或结果未知</td><td>避免自动重复计费</td><td>停止自动调用并提示“可能已接收或计费”；仅用户确认后再次调用</td><td>错误状态 + 调用计数</td></tr>
+                  <tr class="test-case" data-type="isolated"><td>IMG-08</td><td>取消后让旧 Provider 响应迟到</td><td>验证执行围栏</td><td>迟到响应不能覆盖 canceled，草稿与临时文件按规则清理</td><td>专项测试 + 文件检查</td></tr>
+                  <tr class="test-case" data-type="auto"><td>IMG-09</td><td>返回超大、损坏或非图片响应</td><td>限制第三方内容风险</td><td>字节、像素和解码校验明确失败，不发布部分结果或泄漏临时文件</td><td>Provider 契约测试</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1526,12 +1548,12 @@ docker compose --env-file deploy\.env ps</pre>
 
         <div class="automation-grid">
           <article class="automation-card">
-            <h3><span>后端 pytest</span><span class="pill auto">89 passed</span></h3>
-            <p>覆盖 NLP、排序公式、API 主流程、认证/CSRF、素材删除、幂等、持久化、故障、ASR/LLM 错误、Worker 租约与超时栅栏。</p>
+            <h3><span>后端 pytest</span><span class="pill auto">222 passed</span></h3>
+            <p>覆盖 NLP、排序公式、API 主流程、认证/CSRF、素材删除、视觉标签、文生图付费调用屏障、幂等、持久化、故障、ASR/LLM 错误、时间线/预览、Worker 租约与超时栅栏。</p>
             <pre class="command"><button class="copy" type="button" data-copy>复制</button>cd backend
 python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest</pre>
-            <b class="result-pass">2026-07-14 最终本地结果：89 passed, 1 deselected</b>
+            <b class="result-pass">2026-07-15 最终融合代码本地结果：222 passed, 1 deselected（其中文生图专项 54 passed）</b>
           </article>
 
           <article class="automation-card">
@@ -1545,11 +1567,18 @@ npm run build</pre>
           </article>
 
           <article class="automation-card">
-            <h3><span>Playwright 浏览器用例</span><span class="pill auto">28 passed</span></h3>
-            <p>重点覆盖登录/首次初始化、素材删除、完整闭环、Token 展示、自动保存竞态、导航保护、时间线/预览异常和 409 冲突。多数用例使用 mock API，不等于公网真实后端 E2E。</p>
+            <h3><span>Playwright 浏览器用例</span><span class="pill auto">48 passed</span></h3>
+            <p>重点覆盖登录/首次初始化、素材删除与视觉状态、文生图入库、完整闭环、Token 展示、自动保存竞态、导航保护、时间线/预览异常和 409 冲突。测试套件以 Chromium 和受控 API 为主，不等于公网真实 Provider E2E。</p>
             <pre class="command"><button class="copy" type="button" data-copy>复制</button>cd frontend
 npm run test:browser</pre>
-            <b class="result-pass">2026-07-14 最终本地结果：Chromium 28 passed</b>
+            <b class="result-pass">2026-07-15 最终融合代码本地结果：Chromium 48 passed</b>
+          </article>
+
+          <article class="automation-card">
+            <h3><span>Windows 启动器契约</span><span class="pill auto">7 passed</span></h3>
+            <p>验证一键启动对新旧 API 的能力探测：只有认证、时间线与文生图核心端点都满足时才复用现有服务，避免把旧后端误判为当前版本。</p>
+            <pre class="command"><button class="copy" type="button" data-copy>复制</button>powershell -ExecutionPolicy Bypass -File scripts\test-start-frameflow-contract.ps1</pre>
+            <b class="result-pass">2026-07-15 最终融合代码本地结果：7 个场景通过</b>
           </article>
 
           <article class="automation-card">
@@ -1577,7 +1606,7 @@ npm run test:browser</pre>
 
         <div class="callout warning">
           <span class="callout-icon">△</span>
-          <div><strong>自动化覆盖仍有边界</strong><p>当前 Playwright 只跑 Chromium 且使用 mock API；acceptance 只覆盖文本主链，不覆盖素材上传、编辑排序选择、故障重试、TLS/Auth 和备份恢复。这些必须由后面的真实手工与部署验收补齐。</p></div>
+          <div><strong>自动化覆盖仍有边界</strong><p>当前 Playwright 只跑 Chromium，测试套件主要使用受控 API；acceptance 主要验证 API 与文本任务主链。真实 Gemini、Vision、Image、ASR、TLS/Auth、备份恢复和浏览器公网闭环必须在同一发布提交上另做 live、smoke 与人工 E2E，不能由上述计数替代。</p></div>
         </div>
       </section>
 
@@ -1737,20 +1766,21 @@ npm run test:browser</pre>
         </div>
 
         <div class="timeline">
-          <div class="scene"><time>00:00</time><div class="scene-card"><h3>定位与业务闭环</h3><p>项目台开场，指向项目、素材、运行记录和演示工具。</p><div class="say">“FrameFlow 聚焦输入、异步处理、可解释匹配、人工修正和持久化，而不是伪装成完整剪辑器。”</div></div></div>
-          <div class="scene"><time>00:18</time><div class="scene-card"><h3>用全新文本创建项目</h3><p>快速展示音视频入口并说明 ASR 是条件能力；回到文本，提交新标题和主文本。</p><div class="say">“音视频会真实上传，但是否转写取决于真实 ASR；文本是稳定主入口。”</div></div></div>
-          <div class="scene"><time>00:48</time><div class="scene-card"><h3>真实异步进度</h3><p>停留处理页，展示多个服务端阶段、进度和事件。</p><div class="say">“API 创建持久任务后返回 202，独立 Worker 从 SQLite 原子领取。”</div></div></div>
-          <div class="scene"><time>01:10</time><div class="scene-card"><h3>分段与可解释候选</h3><p>切换城市、数据、绿色科技片段，展开一张候选的匹配依据。</p><div class="say">“每段至少三个不同候选，55% 字符 TF-IDF、30% 关键词、15% 标签与主题。”</div></div></div>
-          <div class="scene"><time>02:00</time><div class="scene-card"><h3>人工编辑与排序</h3><p>修改文本/主题/关键词，展示保存状态；调整片段顺序。</p><div class="say">“自动分析是初稿，版本号防止另一个页面静默覆盖结果。”</div></div></div>
-          <div class="scene"><time>02:35</time><div class="scene-card"><h3>搜索替换与刷新证明</h3><p>全库搜索，手选素材，重新匹配后确认手选仍在，再 Ctrl+R。</p><div class="say">“人工选择保存为 manual；刷新后文本、顺序和素材都从 SQLite 重读。”</div></div></div>
-          <div class="scene"><time>03:10</time><div class="scene-card"><h3>素材与运行追溯</h3><p>进入素材库和运行记录，指出实际 Provider、Model、Token 和降级标记。</p><div class="say">“运行记录显示什么 Provider，我就按什么 Provider 解释。”</div></div></div>
+          <div class="scene"><time>00:00</time><div class="scene-card"><h3>登录、定位与业务闭环</h3><p>从真实登录页进入项目台，指向项目、素材、运行记录和演示工具。</p><div class="say">“FrameFlow 聚焦输入、异步处理、可解释匹配、人工修正和持久化，而不是伪装成完整剪辑器。”</div></div></div>
+          <div class="scene"><time>00:18</time><div class="scene-card"><h3>用全新文本创建项目</h3><p>快速展示音视频入口并说明 ASR 是条件能力；回到文本，提交新标题和主文本。</p><div class="say">“音视频会真实上传，是否转写以实际 ASR 记录为准；文本是稳定主入口。”</div></div></div>
+          <div class="scene"><time>00:45</time><div class="scene-card"><h3>真实异步进度</h3><p>停留处理页，展示多个服务端阶段、进度和事件。</p><div class="say">“API 创建持久任务后返回 202，独立 Worker 从 SQLite 原子领取。”</div></div></div>
+          <div class="scene"><time>01:05</time><div class="scene-card"><h3>分段与可解释候选</h3><p>切换城市、数据、绿色科技片段，展开一张候选的匹配依据。</p><div class="say">“每段至少三个不同候选；55% 语义通道实际是字符 n-gram 还是 Embedding，以运行记录为准。”</div></div></div>
+          <div class="scene"><time>01:45</time><div class="scene-card"><h3>人工编辑、排序与替换</h3><p>修改文本/主题/关键词，展示保存状态；调整片段顺序并搜索替换素材。</p><div class="say">“自动分析是初稿，版本号与事务保存防止另一个页面静默覆盖结果。”</div></div></div>
+          <div class="scene"><time>02:20</time><div class="scene-card"><h3>刷新、时间线与 MP4</h3><p>Ctrl+R 证明修改仍在；展示时间线、节奏控制和已经真实生成的预览视频。</p><div class="say">“人工结果从 SQLite 重读，预览由持久任务交给 ffmpeg 生成。”</div></div></div>
+          <div class="scene"><time>02:55</time><div class="scene-card"><h3>文生图与 Gemini 视觉标签</h3><p>展示录制前真实完成任务的模型和耗时，确认入库并用于片段；打开已完成素材查看 Gemini 视觉标签。</p><div class="say">“低分候选不会静默计费；图片先是私有草稿，确认后才入库，标签来源按真实视觉、文本或规则路径记录。”</div></div></div>
+          <div class="scene"><time>03:20</time><div class="scene-card"><h3>素材治理与运行追溯</h3><p>指向编辑/删除保护，再打开运行记录核对 Image、Vision、LLM、ASR 和 FFmpeg 的实际 Provider/Model。</p><div class="say">“运行记录显示什么 Provider，我就按什么 Provider 解释。”</div></div></div>
           <div class="scene"><time>03:35</time><div class="scene-card"><h3>可重复失败与重试</h3><p>设置 job_fail，创建故障项目，展示原因并点击重试。</p><div class="say">“这是明确标注的一次性故障演练；重试复用原项目，不是再创建一个。”</div></div></div>
-          <div class="scene"><time>04:15</time><div class="scene-card"><h3>边界与收尾</h3><p>回到工作台三栏画面，主动说明单实例、ASR、时间轴与导出的边界。</p><div class="say">“核心闭环、异常恢复、可解释匹配和人工结果持久化都可以独立复现。”</div></div></div>
+          <div class="scene"><time>04:15</time><div class="scene-card"><h3>边界与收尾</h3><p>回到工作台三栏画面，主动说明单实例、外部 Provider、时间线与导出的边界。</p><div class="say">“核心闭环、异常恢复、可解释匹配和人工结果持久化都可以独立复现。”</div></div></div>
         </div>
 
         <div class="callout warning">
           <span class="callout-icon">禁止</span>
-          <div><strong>演示中不要这样说</strong><p>不要把 rules 说成“大模型调用”；不要把字符 TF-IDF 说成“神经 Embedding”；没有真实 ASR 时不要说“已自动转写”；一次性故障注入不要说成“真实 AI 刚才宕机”；默认双路的单机有界并发不要说成“高并发集群”。</p></div>
+          <div><strong>演示中不要这样说</strong><p>不要把 rules 说成“大模型调用”；不要把字符 TF-IDF 说成“神经 Embedding”；没有真实 ASR 时不要说“已自动转写”；文本/规则标签不要说成“Gemini 视觉识别”；预先完成的文生图不要说成“现场几秒生成”，也不要承诺重新调用不会再次计费；一次性故障注入不要说成“真实 AI 刚才宕机”；单机有界 Worker 与独立单并发 Image Worker 不要说成“高并发集群”。</p></div>
         </div>
       </section>
 
@@ -1770,7 +1800,7 @@ npm run test:browser</pre>
             <label class="check-item"><input type="checkbox" data-check="c01"><span>固定并记录最终 commit SHA / 工作树状态</span></label>
             <label class="check-item"><input type="checkbox" data-check="c02"><span>完整重启 API、Worker、前端，避免旧进程</span></label>
             <label class="check-item"><input type="checkbox" data-check="c03"><span>health/live 与 health/ready 成功</span></label>
-            <label class="check-item"><input type="checkbox" data-check="c04"><span>确认 Worker online、素材无破图</span></label>
+            <label class="check-item"><input type="checkbox" data-check="c04"><span>确认核心 Worker 与 Image Worker online、素材无破图</span></label>
             <label class="check-item"><input type="checkbox" data-check="c05"><span>演示实验室故障模式为 none</span></label>
             <label class="check-item"><input type="checkbox" data-check="c06"><span>准备 TD-01、TD-02 与上传测试文件</span></label>
             <label class="check-item"><input type="checkbox" data-check="c07"><span>不打开 .env，不输出真实 Key</span></label>
@@ -1791,6 +1821,8 @@ npm run test:browser</pre>
             <label class="check-item"><input type="checkbox" data-check="c18"><span>搜索素材并人工替换</span></label>
             <label class="check-item"><input type="checkbox" data-check="c19"><span>重新匹配未覆盖人工选择</span></label>
             <label class="check-item"><input type="checkbox" data-check="c20"><span>Ctrl+R 后全部修改仍存在</span></label>
+            <label class="check-item"><input type="checkbox" data-check="c31"><span>文生图成功后由用户确认入库并用于片段</span></label>
+            <label class="check-item"><input type="checkbox" data-check="c32"><span>视觉标签完成或降级来源与运行记录一致</span></label>
           </div>
 
           <div class="checklist">
@@ -1820,7 +1852,7 @@ npm run test:browser</pre>
 
         <div class="card-grid">
           <article class="card"><h3>自动化证据</h3><ul><li>pytest 完整输出</li><li>lint / build 输出</li><li>Playwright 报告与失败 trace</li><li>acceptance 输出</li><li>CI 运行链接</li></ul></article>
-          <article class="card"><h3>产品证据</h3><ul><li>新项目标题和 ID</li><li>处理阶段录屏</li><li>三候选与解释截图</li><li>编辑 / 排序 / 替换</li><li>Ctrl+R 前后对比</li></ul></article>
+          <article class="card"><h3>产品证据</h3><ul><li>新项目标题和 ID</li><li>处理阶段录屏</li><li>三候选与解释截图</li><li>编辑 / 排序 / 替换</li><li>文生图确认入库与视觉标签</li><li>Ctrl+R 前后对比</li></ul></article>
           <article class="card"><h3>可靠性证据</h3><ul><li>job_fail 错误与 request_id</li><li>重试 attempt 与历史事件</li><li>ai_degrade 运行记录</li><li>重启前后同 Project ID</li><li>Worker 恢复无重复结果</li></ul></article>
           <article class="card"><h3>发布证据</h3><ul><li>公网 HTTPS 地址</li><li>无痕窗口主流程</li><li>容器 healthy</li><li>持久卷 / 备份恢复</li><li>密钥扫描与访问控制</li></ul></article>
         </div>
@@ -1832,7 +1864,7 @@ npm run test:browser</pre>
           <div><b>OS / 浏览器</b>____________________________</div>
           <div><b>Python / Node / npm</b>____________________________</div>
           <div><b>数据目录 / 环境</b>本地 / Docker / 公网：____________</div>
-          <div><b>Provider</b>ASR：______　LLM：______　Model：______</div>
+          <div><b>Provider</b>ASR：______　LLM：______　Vision：______　Image：______</div>
           <div><b>自动化结果</b>pytest：___　Playwright：___　build：___</div>
           <div><b>真实链路结果</b>acceptance：___　E2E-01：___　E2E-02：___</div>
           <div><b>失败 ID</b>Job / request_id：______________________</div>
@@ -1841,7 +1873,7 @@ npm run test:browser</pre>
 
         <div class="callout good">
           <span class="callout-icon">✓</span>
-          <div><strong>建议的 GO 标准</strong><p>后端、lint、build、Playwright 全通过；本地与目标环境 acceptance 通过；真实 E2E 编辑/排序/手选刷新不丢；故障与重试通过；重启后数据仍在；没有真实密钥或已知高风险未披露。</p></div>
+          <div><strong>建议的 GO 标准</strong><p>后端、lint、build、Playwright 与启动器契约全通过；本地与目标环境 acceptance 通过；真实 E2E 编辑/排序/手选刷新不丢；文生图入库、视觉标签来源、故障与重试通过；重启后数据仍在；没有真实密钥或已知高风险未披露。</p></div>
         </div>
       </section>
 
@@ -1857,11 +1889,11 @@ npm run test:browser</pre>
         <div class="boundary-grid">
           <div class="boundary"><i>!</i><div><b>音视频上传 ≠ 默认 ASR 已成功</b><span>上传与异步任务已实现；转写需要 faster-whisper 或真实外部 ASR。</span></div></div>
           <div class="boundary"><i>!</i><div><b>默认 TF-IDF ≠ 神经 Embedding</b><span>默认使用字符 n-gram；只有运行记录显示本地 BGE 或远程 embeddings 时，才能宣称启用了神经向量。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>自动标签不是视觉模型识图</b><span>上传素材留空时可由 LLM 或规则分析名称/文本元数据并记录来源；当前不识别真实画面内容。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>自动标签存在视觉、文本与规则三级来源</b><span>启用视觉 Provider 时只发送一张归一化画面并可生成真实画面标签；不可用时依次降级为文本 LLM 或本地规则，详情和运行记录必须如实区分。</span></div></div>
           <div class="boundary"><i>!</i><div><b>组合预览不是精确视频剪辑时间轴</b><span>已支持片段时间线和 MP4 预览，但没有帧级裁切、复杂转场、多音轨或专业导出参数。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>有界 Worker 池不代表水平扩容</b><span>SQLite WAL + 默认双 Worker 适合单机 Demo 和低并发并行处理。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>有界 Worker 与独立 Image Worker 不代表水平扩容</b><span>SQLite WAL、核心有界 Worker 池和固定单并发 Image Worker 适合单机 Demo 与低并发；不能把它描述为多实例共享队列或高吞吐集群。</span></div></div>
           <div class="boundary"><i>!</i><div><b>单管理员登录 ≠ 多租户权限</b><span>已有应用会话、CSRF 与整站 Basic Auth，但没有团队用户、项目归属、RBAC 或租户隔离。</span></div></div>
-          <div class="boundary"><i>!</i><div><b>IMAGE_API_* 是预留配置</b><span>当前产品没有业务内图像生成，LLM 也只增强分段、主题和关键词。</span></div></div>
+          <div class="boundary"><i>!</i><div><b>文生图是条件付费能力</b><span>产品已有持久文生图、确认入库和片段应用闭环，但需要独立 <code>IMAGE_API_*</code> Provider。每次重新调用都可能计费；结果未知时系统停止自动调用并等待用户确认。</span></div></div>
           <div class="boundary"><i>!</i><div><b>素材删除有保护边界</b><span>只能删除未被项目引用的用户上传素材；种子、已引用和最低保底素材会拒绝删除。项目重命名与审计管理页面仍未完成。</span></div></div>
           <div class="boundary"><i>!</i><div><b>公网 Demo 不是生产安全系统</b><span>已有单机读写限流，但没有分布式配额、恶意文件扫描、RBAC 与多租户隔离。</span></div></div>
           <div class="boundary"><i>!</i><div><b>文档与运行实例必须重新核对</b><span>发布前校对 KNOWN_ISSUES、AI_USAGE、配置变量和实际代码，避免陈旧描述。</span></div></div>

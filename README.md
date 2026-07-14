@@ -1,83 +1,190 @@
 # FrameFlow
 
 [![FrameFlow CI](https://github.com/tiqing2005/frameflow/actions/workflows/ci.yml/badge.svg)](https://github.com/tiqing2005/frameflow/actions/workflows/ci.yml)
+[![在线演示](https://img.shields.io/badge/Demo-在线可用-1f9d68)](https://frameflow.sbh2005.me)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[公开源码仓库](https://github.com/tiqing2005/frameflow) · 中文优先、AI 辅助的字幕语义分段与可解释素材匹配工作台
+面向招聘实战题二“AI 字幕分析与素材匹配平台”的完整 Demo：把文本、音频或视频转成可恢复的异步任务，完成字幕整理、语义分段、可解释素材匹配、人工调整、持久化保存和 MP4 组合预览；在核心闭环之外，还实现了 Gemini 视觉标签和文生图素材闭环。
 
-FrameFlow 把文本、音频或视频输入转成持久化异步任务，生成语义片段，为每个片段给出至少 3 个带分项得分和中文理由的素材候选，并允许人工编辑字幕、拖动排序、搜索替换素材。当现有素材不合适时，用户还能用自然语言生成图片，确认后原子加入素材库、触发后台 AI 标签任务并直接用于当前字幕片段；标签的视觉、文本或规则来源会按实际运行结果记录。系统会把最终选择组织成可视化时间线，并异步生成带匹配素材的 MP4 组合预览；页面刷新后，任务、选择、预览和 AI 审计记录仍然存在。
+## 交付信息
 
-## 产品界面
+| 项目 | 内容 |
+| --- | --- |
+| 候选人姓名 | 见正式投递信息；公开仓库不额外保存个人隐私 |
+| 选择题目 | **题目二：AI 字幕分析与素材匹配平台** |
+| 公网演示 | [https://frameflow.sbh2005.me](https://frameflow.sbh2005.me) |
+| 测试账号 | 用户名 `admin`；临时密码随投递材料单独提供，避免在公开仓库长期暴露管理员凭据 |
+| 源码仓库 | [https://github.com/tiqing2005/frameflow](https://github.com/tiqing2005/frameflow) |
+| 演示视频 | **待补充（脚本已准备）**；正式 3～5 分钟录屏尚未交付，当前仅提供 [4 分 30 秒讲解脚本](docs/DEMO_SCRIPT.md) |
+| API 文档 | 登录后访问 `/api/docs`；静态契约见 [docs/API.md](docs/API.md) |
 
-新版界面使用深色侧栏和橙色强调色。工作区导航统一为“项目 / 素材库 / 运行记录”，系统工具集中在“演示工具”；项目总览可查看素材与任务状态，创建项目时可选择文本、音频或视频输入，再进入工作台完成分段、候选比较、人工调整和组合预览。
+> 公网环境是单管理员招聘 Demo。面试官可以独立操作，但请勿上传隐私、商业机密或无授权媒体。测试结束后会轮换临时密码；API Key 只存在于服务器环境变量中，不进入仓库、浏览器或数据库。
+
+## 题目完成度
+
+### 必须项
+
+| 题目要求 | 实现结果 | 验收入口 |
+| --- | --- | --- |
+| 文本、音频、视频输入 | 已实现文本粘贴与音视频上传，最大 100 MB | 新建项目 |
+| 音视频语音识别 | 已实现本地 faster-whisper，并保留 DashScope / OpenAI-compatible 适配器 | 新建项目 → 处理页 |
+| 异步进度、失败原因、重试 | 持久 Job、阶段事件、心跳、租约、取消、可重试失败 | 处理页 / 演示工具 |
+| 原始字幕与语义分段 | 原文回读；规则分段与 Gemini 严格 Schema 增强，失败自动降级 | 三栏工作台 |
+| 人工编辑文本和顺序 | 自动保存、乐观锁、拖动和箭头排序 | 三栏工作台 |
+| 主题和关键词 | 每个片段可查看、编辑并重新匹配 | 三栏工作台 |
+| 图片和短视频素材库 | 24 张图片 + 6 个视频种子素材，并支持上传、编辑、删除 | 素材库 |
+| 搜索和筛选 | 按名称、标签、关键词和类型过滤 | 素材库 / 候选区 |
+| 每段至少 3 个候选 | 服务端强制最少 3 个，保存分项得分、命中词和中文理由 | 候选区 |
+| 人工替换并刷新保存 | Selection 持久化，人工选择、排序和字幕编辑均可刷新回读 | 工作台刷新 |
+| 外部 AI 失败处理 | 明确错误；字幕、视觉标签和语义匹配均有可审计降级路径 | 运行记录 / 演示工具 |
+| 密钥安全 | 仅后端环境变量读取；示例配置只保留空值或占位值 | `.env.example` |
+
+### 加分项
+
+- 自动素材标签：图片或视频 poster 进入“Gemini 视觉 → 文本 LLM → 本地规则”三级链，真实来源写入运行记录。
+- 混合排序：`55% 语义 + 30% 关键词 + 15% 主题/标签`；支持本地 BGE 或远程 Embedding，公网 Demo 当前如实使用字符 n-gram TF-IDF 回退。
+- 拖动排序和快速替换：服务端事务排序、前端拖拽/箭头、搜索素材后一键采用。
+- 时间线和预览：目标总时长、单段 1～30 秒精调、自动分配、过期提示和输入指纹幂等。
+- MP4 预览：Worker 调用 ffmpeg 生成 H.264/MPEG-4 组合预览，并在环境支持时烧录字幕。
+- 可靠任务：幂等创建、并发领取、执行代次栅栏、租约心跳、硬超时隔离、失败重试和优雅停机。
+- AI 可追溯：记录 provider、model、输入哈希、策略版本、耗时、降级状态和结果摘要。
+- 扩展闭环：自然语言文生图 → 私有草稿 → 用户确认入库 → Gemini 标签 → 字幕候选/时间线。
+
+详细逐项证据见 [评分矩阵](docs/SCORING_MATRIX.md)。
+
+## 当前产品界面
+
+所有截图均于 **2026-07-15** 从当前公网版本实机重新采集，不是设计稿或旧版占位图。
 
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="FrameFlow 项目总览" width="900">
+  <img src="docs/images/workbench.png" alt="FrameFlow 三栏字幕与素材匹配工作台" width="100%">
 </p>
-<p align="center"><sub>项目总览：统计项目、素材和任务状态，并继续最近编辑。</sub></p>
-
-<p align="center">
-  <img src="docs/images/workbench.png" alt="FrameFlow 字幕与素材匹配工作台" width="900">
-</p>
-<p align="center"><sub>项目工作台：检查语义片段、比较可解释候选、调整字幕与素材选择。</sub></p>
+<p align="center"><sub>核心工作台：5 个语义片段、真实图片/视频、至少 3 个候选、匹配理由、人工替换、时间线与自动保存。</sub></p>
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/new-project.png" alt="FrameFlow 新建项目" width="100%">
-      <p align="center"><sub>新建项目</sub></p>
+      <img src="docs/images/login.png" alt="FrameFlow 登录页" width="100%">
+      <p align="center"><sub>公网登录与安全会话</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/assets.png" alt="FrameFlow 素材库" width="100%">
-      <p align="center"><sub>素材库</sub></p>
+      <img src="docs/images/dashboard.png" alt="FrameFlow 项目总览" width="100%">
+      <p align="center"><sub>持久化项目、素材和任务状态</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/new-project.png" alt="FrameFlow 音视频上传" width="100%">
+      <p align="center"><sub>文本 / 音频 / 视频输入</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/processing.png" alt="FrameFlow 异步处理进度" width="100%">
+      <p align="center"><sub>真实阶段、实时事件、取消与恢复</sub></p>
     </td>
   </tr>
 </table>
 
 <p align="center">
-  <img src="docs/images/workbench-mobile.png" alt="FrameFlow 移动端工作台" width="320">
+  <img src="docs/images/preview-video.png" alt="FrameFlow 时间线与预览视频" width="900">
 </p>
-<p align="center"><sub>移动端工作台会把同一编辑流程压缩为适合窄屏操作的分区视图。</sub></p>
+<p align="center"><sub>20.1 秒时间线：逐段时长可调，预览完成后可直接播放或按新输入重新生成。</sub></p>
 
-## 核心亮点
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/image-generation.png" alt="FrameFlow 文生图成功结果" width="100%">
+      <p align="center"><sub>真实文生图：模型、耗时、比例和确认入库</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/asset-ai-tags.png" alt="FrameFlow Gemini 素材标签" width="100%">
+      <p align="center"><sub>Gemini 单画面理解、标签、关键词与素材治理</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/assets.png" alt="FrameFlow 素材库" width="100%">
+      <p align="center"><sub>31 项真实图片/视频与搜索筛选</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/runs.png" alt="FrameFlow AI 运行记录" width="100%">
+      <p align="center"><sub>Gemini、gpt-image-2、ffmpeg 和降级策略可追溯</sub></p>
+    </td>
+  </tr>
+</table>
 
-- 真实业务闭环：输入 → 异步处理 → 分段 → 可解释匹配 → 人工编辑 → 持久化结果。
-- 文生图素材闭环：独立持久任务调用 OpenAI-compatible 图像接口，生成结果先保存在私有草稿区；用户确认后再原子入库、自动排队后台 AI 标签，并可直接写入当前片段的 `generated` Selection。成功图像不会因刷新丢失，取消后的迟到响应也无法覆盖任务状态，标签来源按视觉、文本或规则的真实执行路径记录。
-- 自动素材理解：标签或关键词留空的新素材会在后台识别真实画面并生成中文标签；已有素材（含种子素材）也可手动触发 AI 重新生成。视觉不可用时依次回退文本 LLM 和确定性规则，并保存实际运行来源。
-- 可恢复任务：数据库任务队列、租约、心跳、硬超时保护、耗尽控制、重试/取消与单调进度事件；项目任务和素材识别任务共享可配置的有界 Worker 进程池。
-- 可解释排序：`0.55 × 语义相似 + 0.30 × 关键词重合 + 0.15 × 标签/主题重合`。语义通道默认字符 n-gram TF-IDF（零依赖），启用本地 BGE 向量或远程 `/embeddings` 后升级为真·语义相似度，并保留三项分数与命中词便于人工判断。
-- 时间线与组合预览：字幕片段按时长形成素材时间线；可设置目标总时长、按字幕字数/当前比例/平均方式分配，或精确调整单片段 1–30 秒并随时恢复自动时长。保存节奏后会明确标记旧预览过期，但不会擅自重新渲染；预览请求仍按输入指纹幂等，Worker 使用 ffmpeg 生成 H.264/MPEG-4 MP4，并在环境支持时烧录中文字幕。
-- 可追溯 AI：语义分段、素材匹配、自动标签和预览渲染分别记录 provider、model、输入哈希、策略版本、耗时、结果摘要与降级状态。
-- 应用内登录：单管理员 HttpOnly Cookie 会话、CSRF 写操作校验、登录失败限流与退出；本地首次使用可在回环地址安全创建账号，公网部署则预置密码哈希并关闭远程首次认领。
-- 安全素材治理：上传素材支持编辑与删除；种子素材、正在被项目片段引用的素材和会破坏最低可演示素材数的删除会被明确拒绝，避免数据库与媒体文件失配。
-- 工程完整性：统一错误结构、幂等创建、乐观锁编辑、事务化排序、进程内读写限流、健康检查和审计轨迹。
-- 可演示故障：一次性 AI 降级和任务失败注入，可现场展示 fallback 与 retry。
-- 可部署：多阶段 Docker 构建、非 root 运行、Caddy 自动 HTTPS、`/data` 持久化、备份恢复和健康回滚。
-- 公网演示首次部署默认强制整站 Basic Auth，并同时启用请求体限制、安全响应头和容器资源限制；只有在可信内网或外层已有强鉴权时才应显式关闭。
+<details>
+<summary>查看移动端工作台</summary>
 
-## 技术架构
+<p align="center">
+  <img src="docs/images/workbench-mobile.png" alt="FrameFlow 移动端工作台" width="390">
+</p>
+
+</details>
+
+## 业务闭环
 
 ```text
-浏览器 / React 19 + Vite
-          │ 同源 REST / multipart
-          ▼
-  Caddy（HTTPS、压缩、安全头）
-          ▼
- FastAPI API ───── SQLite WAL + /data/media + /data/private
-       │                         ▲
-       ├─ 持久化 Job ─────────── Core Worker
-       │         分段 / 自动标签 / 混合排序 / ASR / ffmpeg 预览
-       └─ ImageGeneration ────── Image Worker（固定单并发）
-                                  │
-                         OpenAI-compatible 图像服务
+文本 / 音频 / 视频
+        │
+        ▼
+持久化异步 Job ── ASR / 字幕解析 ── 语义分段 ── 主题与关键词
+        │                                      │
+        │                                      ▼
+        │                         混合排序 + 至少 3 个候选
+        │                                      │
+        ▼                                      ▼
+失败原因 / 取消 / 重试             人工编辑 / 排序 / 搜索替换
+                                               │
+                                               ▼
+                                  Selection 持久化 + 时间线
+                                               │
+                                               ▼
+                                      ffmpeg MP4 预览
+
+候选不足时：自然语言 → Image Worker → 私有草稿 → 确认入库
+                                      → Gemini 标签 → 候选 / 时间线
 ```
 
-这是“模块化单体 + 独立任务循环”的有意选择：招聘作业体量下，它比引入 Redis、消息队列和多服务部署更容易验收，同时保留任务恢复、追踪和未来拆分边界。
+## 架构与设计取舍
+
+```text
+React 19 + TypeScript + Vite
+              │ 同源 REST / multipart
+              ▼
+宿主 Nginx（公网 Demo）/ Caddy（仓库默认部署）
+              │
+              ▼
+FastAPI API ───────── SQLite WAL + /data/media + /data/private
+     │                                  ▲
+     ├── 持久 Job ─────────────── Core Worker 池
+     │    ASR / 分段 / 匹配 / 标签 / ffmpeg
+     │
+     └── ImageGeneration ──────── 独立单并发 Image Worker
+                                          │
+                                OpenAI-compatible 图像服务
+```
+
+这是面向单机招聘 Demo 的“模块化单体 + 独立持久 Worker”方案。它避免为了展示而引入 Redis/Kafka 等额外运维负担，同时保留任务恢复、并发栅栏、审计轨迹以及未来拆分队列/对象存储/向量数据库的边界。
+
+### 匹配策略
+
+```text
+final_score = 0.55 × semantic + 0.30 × keyword + 0.15 × tag_topic
+```
+
+- 语义分：默认字符 n-gram TF-IDF，零外部依赖；配置本地 `bge-small-zh-v1.5` 或远程 `/embeddings` 后切换为向量余弦相似度。
+- 关键词分：字幕关键词与素材关键词的可解释重合度。
+- 标签/主题分：片段主题与素材标签的重合度。
+- 每个 Recommendation 保存三项分数、命中词、中文解释、运行 ID 和策略版本，不能只返回一个黑盒总分。
+- Embedding、LLM 或视觉服务失败时回退到可工作的本地通道，并把降级事实显示在运行记录中。
+
+为什么不只用大模型：小素材库需要低延迟、可复现、可解释和无 Key 也能演示；LLM 更适合增强分段与标签，不适合作为唯一排序依据。
 
 ## 快速开始
 
 ### Docker（推荐）
 
-准备域名和 Linux VPS 后：
+要求 Linux VPS、Docker Compose、已解析的域名和开放的 80/443 端口：
 
 ```bash
 git clone https://github.com/tiqing2005/frameflow.git
@@ -85,156 +192,117 @@ cd frameflow
 bash deploy/first-deploy.sh app.example.com ops@example.com
 ```
 
-脚本会分别配置应用内管理员登录和可选的 Caddy 整站 Basic Auth；两层密码可不同，明文只在部署终端中短暂读取，服务器的 `deploy/.env` 仅保存密码哈希。完整的 DNS、环境变量、HTTPS、备份、恢复、升级和故障排查说明见 [部署手册](docs/DEPLOYMENT.md)。
-
-公开演示地址为 [https://frameflow.sbh2005.me](https://frameflow.sbh2005.me)。当前部署已完成 HTTPS、应用登录、健康检查与真实音视频处理验证；每次升级后仍应重新执行 smoke 与主流程验收，不能沿用旧提交的通过结论。
+脚本会生成服务器专用 `deploy/.env`、构建多阶段镜像、执行迁移、健康检查和 HTTPS smoke。明文凭据不会写入 Git；完整 DNS、首次部署、升级、备份、恢复和回滚步骤见 [部署手册](docs/DEPLOYMENT.md)。
 
 ### 本地开发
 
-要求 Python 3.11+、Node.js 22+。
+要求 Python 3.11+、Node.js 22+、ffmpeg：
 
-```bash
+```powershell
+# 后端：API + Core Worker + Image Worker 监督进程
 cd backend
 python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r requirements-dev.txt
-python -m app.worker
-```
+python -m app.serve
 
-另开终端启动 API：
-
-```bash
-cd backend
-uvicorn app.main:app --reload --port 8000
-```
-
-需要在本地验证文生图持久队列时，可改用 `python -m app.serve` 一次启动 API、核心 Worker 和独立 Image Worker。真实图像密钥只写入 Git 忽略的 `.env`；不配置 `IMAGE_API_BASE_URL/IMAGE_API_KEY` 时，其他字幕与素材功能仍可正常使用。
-
-再启动前端：
-
-```bash
+# 另开终端启动前端
 cd frontend
 npm ci
 npm run dev
 ```
 
-访问 `http://localhost:5173`；Vite 会把 `/api` 与 `/media` 代理到 `127.0.0.1:8000`。全新本地数据目录首次打开会进入管理员初始化页，该入口只允许从服务所在机器的回环地址调用；创建后使用同一页面登录。API 文档位于 `http://127.0.0.1:8000/api/docs`。
+浏览器访问 `http://localhost:5173`。全新数据目录的管理员初始化只允许从服务所在机器的回环地址调用；真实密钥只填写在 Git 忽略的 `.env`，不配置外部模型时仍可通过文本 + 规则降级完成核心流程。
 
-## 测试与质量检查
+## 测试与验收
 
-```bash
+```powershell
+# 后端
 cd backend
-pytest                       # 单元 + 契约测试（live 测试默认跳过）
+python -m pytest
 
-# 验证真实 provider 连通性（部署或更换 key/模型后运行，需联网与密钥）
-FRAMEFLOW_RUN_LIVE=1 pytest -m live
-
-cd ../frontend
+# 前端
+cd ..\frontend
 npm run lint
 npm run build
-npx playwright test          # 浏览器 E2E（含完整 happy-path 闭环）
+npm run test:browser
+
+# API 验收（服务已启动时）
+cd ..
+.\scripts\acceptance.ps1 -BaseUrl http://127.0.0.1:8000
 ```
 
-后端测试覆盖分段、关键词、自动标签、混合排序、语义回退、任务恢复、并发幂等、认证/CSRF、素材删除、限流、文生图、时间线和预览渲染契约。2026-07-15 最终融合代码本地门禁为：后端 `222 passed, 1 deselected`，前端 lint、TypeScript、生产构建通过，Chromium Playwright `48 passed`，启动器新旧 API 探测 `7 passed`。`evaluation/evaluate.py` 在 34 条字幕（24 easy + 10 hard）上对比关键词基线 / 字符 TF-IDF / 混合排序，并在启用 embedding 时追加“混合排序(向量)”行；本地向量混排结果为 Hit@3 `0.9412`、nDCG@3 `0.8288`。公网 smoke 与 acceptance 必须在实际部署后另行记录，不能由本地结果替代。更完整的验收范围见 [测试计划](docs/TEST_PLAN.md) 和 [评分矩阵](docs/SCORING_MATRIX.md)。
+2026-07-15 最终门禁：
 
-## AI 使用边界
+| 检查 | 结果 |
+| --- | --- |
+| 后端 pytest | `222 passed, 1 deselected` |
+| 文生图专项 | `54 passed` |
+| 前端 lint / TypeScript / production build | 通过，1789 modules |
+| Chromium Playwright | `48 passed` |
+| Windows 启动器契约 | `7 passed` |
+| GitHub Actions | 通过 |
 
-- 文本主流程使用确定性分段、关键词提取和可解释混合排序；没有密钥、模型超时或结果不合格时仍可工作。
-- 公网部署以 `gemini` Provider 调用 Gemini 3.1 Flash Lite Preview 完成字幕语义增强，传输协议仍为 OpenAI-compatible `/chat/completions`；DeepSeek 仍是可替换方案。模型只负责分段、主题和关键词，输出仍经过严格 Schema 与原字幕完整性校验。
-- 匹配的语义通道默认字符 n-gram TF-IDF（零依赖）；安装 `requirements-embeddings-local.txt`（本地 BGE `bge-small-zh-v1.5`）或配置远程 `/embeddings` 后，0.55 权重升级为真·向量余弦相似度，任何失败回退字符相似。
-- 公网主演示路径使用本地 `faster-whisper small/int8` 转写，避免云端 ASR 跨境回源；同时保留 OpenAI-compatible ASR 与 DashScope Paraformer-v2 适配器。
-- 上传新素材时，标签或关键词留空会快速返回并排队执行画面识别；图片只发送一张归一化画面，视频只发送一张 poster/抽取帧，不上传整段视频。已有素材（含种子素材）可在详情中手动重新生成标签。
-- 素材标签固定使用“视觉模型 → 纯文本 LLM → 本地规则”的降级链。后两级产出会在运行记录中诚实标为降级，并记录实际 provider/model/source，不把文本或规则结果伪装成视觉结果。
-- 启用 `VISION_PROVIDER=openai-compatible` 会把上述单张画面发送给配置的第三方网关。敏感素材应保持 `VISION_PROVIDER=none` 或不要上传；网关的数据保留、训练和合规政策由部署者自行确认。
-- 运行记录会如实标记 provider、model、策略版本、相似度来源（embedding / char-ngram）与是否降级，不把规则结果伪装成大模型结果。
-- API Key 只从后端环境变量读取，不进入 Vite 构建产物、数据库或审计日志。
-- 文生图使用独立的 `IMAGE_API_BASE_URL`、`IMAGE_API_KEY`、`IMAGE_MODEL`，只由服务端固定单并发 Image Worker 读取。Provider 仅接受 `b64_json`；后端限制响应、解码字节和像素数，完整解码、去元数据并统一为 PNG。生成结果必须经用户确认才进入素材库，工作台不会因低分候选而静默发起付费调用。
+同日公网实机记录：管理员一次登录成功；文本项目 5 秒生成 5 段且每段不少于 3 个候选；20.1 秒 MP4 预览渲染 8.5 秒；文生图 41.5 秒；Gemini 视觉标签 4.3 秒；健康端点 HTTP 200。以上是一次受控样本，不承诺 SLA；运行记录截图和页面会保留真实 provider、model、耗时和降级状态。
 
-公网语义增强配置示例（写入 `deploy/.env`，网关地址和密钥仅使用服务端真实值，不要提交）：
+测试范围、故障场景和人工验收清单见 [测试计划](docs/TEST_PLAN.md)。
 
-```dotenv
-LLM_PROVIDER=gemini
-LLM_BASE_URL=https://llm-gateway.example.com/v1
-LLM_API_KEY=你的服务端密钥
-LLM_MODEL=gemini-3.1-flash-lite-preview
-LLM_TIMEOUT=20
-```
+## AI 使用说明
 
-兼容网关不可用时可切回 `LLM_PROVIDER=rules` 保证文本闭环，或改用 `LLM_PROVIDER=deepseek`、对应 DeepSeek API 基址和该账号实际可用的模型 ID。不要同时复用或混淆 ASR 与 LLM 密钥。
+### 产品运行时
 
-画面识别使用独立配置，绝不继承文本 LLM、ASR 或 OpenAI 语音密钥。默认 `none` 不向外发送画面；启用兼容网关时把以下配置写入服务器 `deploy/.env`：
+- 字幕语义增强：公网 Demo 使用 Gemini 3.1 Flash Lite Preview；输出必须通过严格 Schema、原文完整性和片段边界校验，否则回退规则分段。
+- 语音识别：公网主演示路径使用本地 faster-whisper `small/int8`；DashScope Paraformer-v2 与 OpenAI-compatible ASR 为可替换适配器。
+- 素材理解：只发送一张规范化图片或视频 poster，不上传整段视频；失败依次回退文本 LLM 和本地规则。
+- 文生图：使用独立 `IMAGE_API_*` 配置和固定单并发 Worker；只有用户明确确认后才进入素材库，结果未知时不会自动重复产生费用。
+- 密钥隔离：LLM、ASR、Vision、Embedding、Image 分别配置，后端启动时读取；审计只保存哈希、摘要和模型元数据。
 
-```dotenv
-VISION_PROVIDER=openai-compatible
-VISION_BASE_URL=https://vision-gateway.example.com/v1
-VISION_API_KEY=
-VISION_MODEL=gpt-4o-mini
-VISION_TIMEOUT=30
-```
+### 开发过程中的 AI 辅助范围
 
-只在服务器上填写新密钥并保持 `deploy/.env` 权限为 `600`。任何曾出现在聊天、截图、终端历史或公开日志中的旧 Key 都应先在供应商侧撤销并轮换，不能继续用于部署。上传、预览、ASR 和素材画面识别共享 `FRAMEFLOW_WORKER_CONCURRENCY`；提高并发前需要结合 CPU、内存和外部网关限流压测。
+- AI 用于需求拆解、方案比较、代码草拟、测试用例扩展、代码审查、故障定位和文档整理。
+- 架构取舍、数据边界、安全策略、真实 Provider 调用和部署结论都以代码、自动测试、运行日志和公网 E2E 证据复核，不把模型回答当作完成证明。
+- 没有使用公司现有系统、私有仓库代码或来源不明的商业代码；第三方依赖均可从锁定的包清单和许可证追溯。
+- 面试时应能解释持久任务、幂等、租约、乐观锁、混合排序、降级链和文生图费用屏障，而不是只展示 AI 生成结果。
 
-图像生成使用另一把独立密钥，不能复用 LLM、Vision 或 ASR 凭据：
+更完整的 Provider、隐私和回退边界见 [AI 使用说明](docs/AI_USAGE.md)。
 
-```dotenv
-IMAGE_API_BASE_URL=https://image-gateway.example.com/v1
-IMAGE_API_KEY=
-IMAGE_MODEL=gpt-image-2
-IMAGE_API_TIMEOUT=180
-IMAGE_DAILY_LIMIT=50
-IMAGE_MAX_PENDING=5
-```
+## 已知边界与后续计划
 
-图片生成可能耗时数十秒，页面只展示真实阶段与已用时间，不伪造上游百分比。读超时可能代表供应商已接单并计费，因此系统不会盲目无限重试；完整设计与验收边界见 [文生图闭环说明](docs/IMAGE_GENERATION.md)。
+- 公网匹配当前使用字符 n-gram TF-IDF；神经 Embedding 已有代码和测试，但需要额外模型/远程服务配置后才启用。
+- 预览是素材拼接与可选字幕烧录，当前不恢复原始音轨，也不是专业剪辑器。
+- 视觉标签只理解一张图片或视频 poster，不是整段视频的多帧动作理解。
+- SQLite WAL + 本地卷适合单机低并发 Demo，不支持多个容器共享写入同一个数据库文件。
+- 当前只有单管理员，没有用户注册、项目归属、RBAC 或多租户隔离；公网密码不会写入仓库。
+- 本地 ASR 冷启动需要下载模型；长音频、噪声和并发会增加等待时间，样本耗时不是 SLA。
+- 文生图上游没有可验证的费用明细和真实中间百分比；网络结果未知时，用户确认重试仍可能产生第二次费用。
+- 上传有大小、类型、签名和路径保护，但没有杀毒或恶意媒体沙箱。
 
-启用本地 BGE 向量语义（可选，需联网首次下载约 95MB 模型到 `HF_HOME`）：
+完整清单和改进路线见 [已知问题](docs/KNOWN_ISSUES.md)。
 
-```bash
-pip install -r backend/requirements-embeddings-local.txt
-# 或 Docker 构建：--build-arg INSTALL_LOCAL_EMBEDDINGS=true
-# .env: EMBEDDING_PROVIDER=auto（默认）即可
-```
+## 面试演示顺序
 
-模型 ID 是否可用取决于账号或兼容网关；不可用、超时或返回格式不合格时，任务会自动使用确定性规则完成并如实记录降级。
+1. 登录公网 Demo，创建一段新的中文文本或上传音视频。
+2. 展示持久异步阶段、实时事件、失败原因、取消与重试入口。
+3. 进入工作台，解释语义片段、关键词、主题和至少 3 个候选的匹配依据。
+4. 修改字幕、拖动顺序、搜索并替换素材，刷新证明结果持久化。
+5. 调整时间线并生成 MP4 预览。
+6. 展示文生图、确认入库和 Gemini 单画面标签。
+7. 打开运行记录，核对 Gemini、ASR、排序降级、gpt-image-2 和 ffmpeg 的真实轨迹。
+8. 使用演示工具注入一次失败或 AI 降级，并完成重试恢复。
 
-详见 [AI 使用说明](docs/AI_USAGE.md)。
+详细话术与时间分配见 [演示脚本](docs/DEMO_SCRIPT.md) 和 [面试问答](docs/INTERVIEW_QA.md)。
 
-## 关键取舍与已知边界
-
-- SQLite WAL + 可配置的有界 Worker 进程池适合单机演示和低并发。项目处理、预览和素材画面识别共享 `FRAMEFLOW_WORKER_CONCURRENCY`；当前专用 4 核 / 8 GB 公网机固定为单 Worker，并给容器分配 3.5 CPU / 4 GB，避免多个本地模型进程争抢资源。仍不支持多个容器共享写入同一个 SQLite 文件。
-- 前端轮询持久化任务事件，简单且容易穿过代理；大规模实时任务可升级为 SSE/WebSocket。
-- 小素材库在内存计算 TF-IDF 更透明；规模增长后可迁移向量数据库或搜索服务。
-- 当前版本已有单管理员应用内登录与部署层 Basic Auth，但没有用户注册、项目归属、RBAC 或多租户隔离；进程内限流也不等同于分布式配额。
-- 图像网关目前不返回可验证的费用明细和中间进度；系统以每日配额、最多 5 个待处理任务和单并发 Worker 控制滥用，并把每次真实调用写入运行记录。`submitted/result/ready` 持久屏障会阻止进程恢复时自动重复调用；若只有 submitted 而没有可恢复结果，界面会明确提示“结果未知/可能已计费”，只有用户确认才会再次调用。上游不支持 `Idempotency-Key` 时，用户对一个实际上已在供应商完成但本地无结果的请求明确重试，仍可能产生第二次费用。
-- 媒体上传有大小、类型和私有源文件保护，但不包含杀毒或恶意媒体沙箱扫描，公网演示仍应限制访问范围和运行时间。
-- 本地 ASR 依赖较重且首次需要下载模型。当前一次热机实测中，3.5 CPU / 4 GB 容器处理 71 秒音频的转写阶段约 20.5 秒，Gemini 语义增强约 3.1 秒，完整流程约 26 秒；这是样本记录而非性能 SLA，长音频应预留排队和处理时间。
-- Hugging Face 与 `faster-whisper` 模型缓存位于持久化卷 `/data/models/huggingface`，容器升级不会重复丢失缓存。
-
-详见 [已知问题](docs/KNOWN_ISSUES.md)、[架构说明](docs/ARCHITECTURE.md) 和 [数据模型](docs/DATA_MODEL.md)。
-
-## 面试演示建议
-
-1. 创建中文文本项目，展示 202 响应与真实多阶段进度。
-2. 进入工作台，解释 3 个候选的 TF-IDF、关键词、标签分项和命中词。
-3. 拖动字幕排序、快速替换素材并刷新页面，证明事务化持久化与乐观锁。
-4. 打开素材时间线并生成 MP4 组合预览，展示预览任务的幂等、进度和最终播放。
-5. 在候选区点击“生成新画面”，展示异步状态、生成预览、确认入库、后台 AI 标签排队和当前片段立即换图。
-6. 上传一份测试素材，展示自动元数据建议、编辑和安全删除；同时说明种子/已引用素材不能删除。
-7. 注入 `ai_degrade`，展示规则接管与运行记录中的降级标识。
-8. 注入 `job_fail`，展示失败原因、可重试判断与成功恢复。
-9. 打开运行记录，核对文生图、素材标签的实际 AI/规则来源、审计记录、健康检查和公开 Git 提交历史。
-
-详细讲稿见 [演示脚本](docs/DEMO_SCRIPT.md) 和 [面试问答](docs/INTERVIEW_QA.md)。
-
-## 项目文档
+## 文档索引
 
 - [产品需求](docs/PRD.md)
+- [架构说明](docs/ARCHITECTURE.md)
 - [项目结构](docs/PROJECT_STRUCTURE.md)
+- [数据模型](docs/DATA_MODEL.md)
 - [UI 规范](docs/UI_SPEC.md)
 - [API 契约](docs/API.md)
 - [部署手册](docs/DEPLOYMENT.md)
 - [测试计划](docs/TEST_PLAN.md)
+- [评分矩阵](docs/SCORING_MATRIX.md)
 - [文生图闭环](docs/IMAGE_GENERATION.md)
 
 ## License
